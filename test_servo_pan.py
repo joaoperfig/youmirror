@@ -1,23 +1,34 @@
 """
-Pan servo range calibration + sanity-check (channel 0).
+Interactive pan-servo calibration (channel 0).
 
-Phase 1 – Range discovery
-    The servo is swept slowly toward each configured PWM extreme
-    (config.PAN_MIN_ANGLE and config.PAN_MAX_ANGLE).  The servo physically
-    stalls against its mechanical stop while the controller holds that pulse
-    for a settle period, then the commanded angle is recorded as the limit.
+Why the old script failed
+-------------------------
+config.py used to assume the pan servo covers 236 deg across the 500-2500 us
+pulse range, like a standard hobby servo.  The real unit is multi-turn
+(~1118 deg each side of centre, ~2236 deg wall to wall), so every commanded
+"degree" moved ~9.5 real degrees, "nudges" were huge full-speed swings, and
+sweeping to the configured pulse extremes drove the rig straight into its
+mechanical stops.  On top of that, the old "calibration" never measured
+anything - it just recorded the configured extremes back as the limits.
 
-    NOTE: Standard hobby servos on a PCA9685 have no position feedback –
-    the PCA9685 only generates PWM pulses; it cannot read current or angle.
-    The limits recorded here are therefore the commanded PWM extremes.
-    If the actual mechanical stop is reached before the configured extreme,
-    the servo will stall silently; the recorded limit will be slightly inside
-    the true mechanical stop.  Listen for any grinding noise and press
-    Ctrl-C to abort immediately.
+The PCA9685 has no position feedback, so the only safe calibration is a
+human jogging the servo in raw pulse-width and marking the walls by eye.
 
-Phase 2 – Pan tests (relative to discovered centre)
-    Replicates the original nudge/swing/sweep tests, now referenced to the
-    real measured centre rather than the hardcoded PAN_HOME_ANGLE.
+Procedure
+---------
+1. The servo is energised at the midpoint of the currently configured pulse
+   endpoints.  It may move there at full speed - keep hands clear.
+2. Jog with `a` / `d` until the rig *just* touches each wall; mark the walls
+   with `l` and `r`.  Use small steps near the walls (`s` changes the step).
+3. `c` parks midway between the marks.  If the true physical centre is
+   elsewhere, jog to it and mark it with `m`.
+4. `v` runs a gentle ramped verification wiggle around the centre.
+5. `done` prints the exact lines to paste into config.py and parks.
+
+All motion is ramped one PCA9685 count at a time (~4.9 us ~ 5.5 deg of pan), so
+nothing ever slams.  If the servo KEEPS ROTATING while the pulse is held
+constant, it is a continuous-rotation servo and no pulse mapping can position
+it - abort and rethink the hardware.
 
 Usage
 -----
@@ -31,205 +42,247 @@ import config
 from servo_control import ServoController
 
 
-# ---------------------------------------------------------------------------
-# Calibration parameters
-# ---------------------------------------------------------------------------
-_CAL_STEP_DEG  = 1.0   # degrees per step during calibration sweep
-_CAL_STEP_WAIT = 0.04  # seconds between steps  (~25 steps/s → slow crawl)
-_CAL_SETTLE    = 1.2   # seconds to hold at each extreme before recording
-_HOME_HOLD     = 2.5   # seconds to hold centre pulse before killing signal
+# Absolute safety window for commanded pulses (us).  Most servos accept
+# 500-2500; this only guards against typos in `g`, not against the walls.
+_PULSE_FLOOR_US = 400.0
+_PULSE_CEIL_US = 2600.0
+
+_DEFAULT_STEP_US = 10.0   # ~11 deg of pan at the nominal calibration
+_RAMP_WAIT_S = 0.04       # per PCA9685 count while ramping
+
+_HELP = """\
+  a [us]   jog toward lower pulse by one step (or an explicit us amount)
+  d [us]   jog toward higher pulse by one step (or an explicit us amount)
+  s us     set the default jog step
+  g us     ramp to an absolute pulse width
+  l        mark current pulse as the LEFT wall
+  r        mark current pulse as the RIGHT wall
+  m        mark current pulse as the physical CENTRE
+  c        ramp to the centre (marked centre, else midpoint of the walls)
+  v        gentle verification wiggle around the centre (needs both walls)
+  p        print status
+  done     print config.py values and park at centre
+  q        abort (PWM released wherever the servo is)
+"""
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
+class _Session:
+    def __init__(self, servo: ServoController) -> None:
+        self.servo = servo
+        self.pulse: float = 0.0
+        self.step: float = _DEFAULT_STEP_US
+        self.left: Optional[float] = None
+        self.right: Optional[float] = None
+        self.centre_mark: Optional[float] = None
 
-def _prompt(message: str) -> None:
-    """Print a labelled step and pause so the movement is visible."""
-    print(f"\n  ▶  {message}")
-    time.sleep(0.5)
+    # -- geometry helpers ------------------------------------------------
+
+    def span_us(self) -> Optional[float]:
+        if self.left is None or self.right is None:
+            return None
+        return abs(self.right - self.left)
+
+    def deg_per_us(self) -> float:
+        """Physical degrees per us, from marked walls if available."""
+        span = self.span_us()
+        if not span:
+            span = abs(config.PAN_PULSE_RIGHT_US - config.PAN_PULSE_LEFT_US)
+        return config.PAN_TRAVEL_DEG / span
+
+    def centre_pulse(self) -> Optional[float]:
+        if self.centre_mark is not None:
+            return self.centre_mark
+        if self.left is not None and self.right is not None:
+            return (self.left + self.right) / 2.0
+        return None
+
+    # -- motion ----------------------------------------------------------
+
+    def goto(self, target_us: float) -> None:
+        target_us = max(_PULSE_FLOOR_US, min(_PULSE_CEIL_US, target_us))
+        self.pulse = self.servo.ramp_pulse_us(
+            config.PAN_CHANNEL, target_us, wait_s=_RAMP_WAIT_S
+        )
+
+    # -- display ---------------------------------------------------------
+
+    def print_status(self) -> None:
+        dpu = self.deg_per_us()
+        count_us = (1_000_000 / config.SERVO_PWM_FREQ) / config.PCA9685_RESOLUTION
+
+        def fmt(mark: Optional[float]) -> str:
+            return f"{mark:.0f} us" if mark is not None else "not marked"
+
+        print(f"     pulse now : {self.pulse:.0f} us")
+        print(f"     jog step  : {self.step:.0f} us  (~{self.step * dpu:.0f} deg of pan)")
+        print(f"     left wall : {fmt(self.left)}    right wall: {fmt(self.right)}")
+        centre = self.centre_pulse()
+        source = "marked" if self.centre_mark is not None else "midpoint of walls"
+        print(f"     centre    : {fmt(centre)}" + (f"  ({source})" if centre is not None else ""))
+        print(f"     resolution: {count_us:.1f} us/count ~ {count_us * dpu:.1f} deg/count")
 
 
-def _move(
-    servo: ServoController,
-    angle: float,
-    left_limit: float,
-    right_limit: float,
-) -> None:
-    """Command the pan servo, clamped to the discovered limits."""
-    clamped = max(left_limit, min(right_limit, angle))
-    if abs(clamped - angle) > 0.05:
-        print(f"     (clamped {angle:.1f}° → {clamped:.1f}° by discovered limits)")
-    servo.set_pan(clamped)
-    time.sleep(0.8)
+def _verify(session: _Session) -> None:
+    """Gentle ramped nudges around the centre, well inside the walls."""
+    centre = session.centre_pulse()
+    span = session.span_us()
+    if centre is None or span is None:
+        print("     Mark both walls first (l and r).")
+        return
+
+    dpu = session.deg_per_us()
+    half = span / 2.0
+    print("     Verification wiggle (all moves ramped):")
+    for fraction in (0.10, 0.30):
+        offset = half * fraction
+        for direction, name in ((+1, "right"), (-1, "left")):
+            target = centre + direction * offset
+            print(
+                f"       {name:>5} {offset:.0f} us (~{offset * dpu:.0f} deg) ... ",
+                end="", flush=True,
+            )
+            session.goto(target)
+            time.sleep(0.6)
+            print("back to centre")
+            session.goto(centre)
+            time.sleep(0.6)
+    print("     Done - the rig should be at its physical centre now.")
 
 
-def _sweep_to(
-    servo: ServoController,
-    start: float,
-    target: float,
-    step: float = _CAL_STEP_DEG,
-    wait: float = _CAL_STEP_WAIT,
-) -> None:
-    """Sweep the pan servo from *start* to *target* in *step* increments."""
-    direction = 1.0 if target > start else -1.0
-    angle = start
-    while direction * (target - angle) > 1e-6:
-        angle += direction * step
-        if direction * (angle - target) > 0:
-            angle = target
-        servo.set_pan(angle)
-        time.sleep(wait)
+def _finish(session: _Session) -> bool:
+    """Print config values and park at centre.  Returns True on success."""
+    if session.left is None or session.right is None:
+        print("     Mark both walls first (l and r).")
+        return False
 
+    raw = input(
+        f"     Measured wall-to-wall travel in degrees "
+        f"[{config.PAN_TRAVEL_DEG}]: "
+    ).strip()
+    travel = float(raw) if raw else float(config.PAN_TRAVEL_DEG)
 
-# ---------------------------------------------------------------------------
-# Range calibration
-# ---------------------------------------------------------------------------
+    span = session.right - session.left
+    centre = session.centre_pulse()
+    home_deg = (centre - session.left) / span * travel
 
-def calibrate_range(servo: ServoController) -> tuple[float, float]:
-    """
-    Sweep slowly to both configured PWM extremes and return (left, right).
+    # Soft-limit margin: ~10 PCA9685 counts clear of each wall.
+    count_us = (1_000_000 / config.SERVO_PWM_FREQ) / config.PCA9685_RESOLUTION
+    margin_deg = round(10 * count_us * travel / abs(span))
 
-    The servo is commanded all the way to config.PAN_MIN_ANGLE (left) and
-    config.PAN_MAX_ANGLE (right).  If the servo's mechanical end-stop is
-    reached before those angles, it will stall silently – the controller has
-    no way to detect this.  Either way, the extreme commanded angle is used
-    as the range limit.
-    """
     print()
-    print("  ─── Calibration sweep ──────────────────────────────────")
-    print("  No position feedback available – limits are inferred from")
-    print("  the configured PWM extremes.  Listen for grinding noises.")
-    print("  ────────────────────────────────────────────────────────")
-
-    current = float(config.PAN_HOME_ANGLE)
-
-    # ── Left limit ────────────────────────────────────────────────────────
-    print(f"\n  Sweeping LEFT  ({current:.0f}° → {config.PAN_MIN_ANGLE}°) …", end="", flush=True)
-    _sweep_to(servo, current, config.PAN_MIN_ANGLE)
-    time.sleep(_CAL_SETTLE)
-    left_limit = float(config.PAN_MIN_ANGLE)
-    print(f"  held.  Left  limit = {left_limit:.1f}°")
-
-    # ── Right limit ───────────────────────────────────────────────────────
-    print(f"\n  Sweeping RIGHT ({left_limit:.0f}° → {config.PAN_MAX_ANGLE}°) …", end="", flush=True)
-    _sweep_to(servo, left_limit, config.PAN_MAX_ANGLE)
-    time.sleep(_CAL_SETTLE)
-    right_limit = float(config.PAN_MAX_ANGLE)
-    print(f"  held.  Right limit = {right_limit:.1f}°")
-
-    centre = (left_limit + right_limit) / 2.0
-    half   = (right_limit - left_limit) / 2.0
-
+    print("  --- Paste into config.py -------------------------------")
+    print(f"  PAN_PULSE_LEFT_US  = {session.left:.0f}")
+    print(f"  PAN_PULSE_RIGHT_US = {session.right:.0f}")
+    print(f"  PAN_TRAVEL_DEG     = {travel:.0f}")
+    print(f"  PAN_MIN_ANGLE = {margin_deg}")
+    print(f"  PAN_MAX_ANGLE = PAN_TRAVEL_DEG - {margin_deg}")
+    print(f"  PAN_HOME_ANGLE = {home_deg:.0f}")
+    print("  --------------------------------------------------------")
+    print(f"  (resolution: ~{count_us * travel / abs(span):.1f} deg of pan per PCA9685 count)")
     print()
-    print(f"  Range    : {left_limit:.1f}°  ←  {centre:.1f}°  →  {right_limit:.1f}°  (±{half:.1f}° each side)")
-    print(f"  Config   : PAN_HOME_ANGLE = {config.PAN_HOME_ANGLE}°")
 
-    offset = abs(centre - config.PAN_HOME_ANGLE)
-    if offset > 2.0:
-        print(f"  ⚠  Discovered centre differs from config by {offset:.1f}°.")
-        print(f"     Tests will use the discovered centre ({centre:.1f}°).")
-    else:
-        print(f"  ✓  Discovered centre matches config within {offset:.1f}°.")
+    print("     Parking at centre...")
+    session.goto(centre)
+    time.sleep(1.5)
+    return True
 
-    return left_limit, right_limit
-
-
-# ---------------------------------------------------------------------------
-# Main test sequence
-# ---------------------------------------------------------------------------
 
 def main() -> None:
     print("=" * 58)
-    print("  youmirror – pan servo calibration + test")
-    print(f"  Channel      : {config.PAN_CHANNEL}")
-    print(f"  PWM range    : {config.PAN_MIN_ANGLE}° – {config.PAN_MAX_ANGLE}°")
-    print(f"  Config home  : {config.PAN_HOME_ANGLE}°")
+    print("  youmirror - interactive pan calibration (channel 0)")
     print("=" * 58)
-    input("\n  Press Enter to start (Ctrl-C to abort at any time)…")
+    print(_HELP)
+    print("  The servo will be energised at the midpoint of the current")
+    print("  config pulses and may move there at full speed.")
+    input("\n  Press Enter to energise (Ctrl-C aborts at any time)...")
 
     servo = ServoController()
+    session = _Session(servo)
 
-    centre: Optional[float] = None
+    start = (config.PAN_PULSE_LEFT_US + config.PAN_PULSE_RIGHT_US) / 2.0
+    session.pulse = servo.set_pulse_us(config.PAN_CHANNEL, start)
+    time.sleep(1.0)
+    session.print_status()
 
     try:
-        # ── Move to config home before sweeping ───────────────────────────
-        _prompt(f"Moving to config HOME ({config.PAN_HOME_ANGLE}°) before calibration")
-        servo.set_pan(config.PAN_HOME_ANGLE)
-        time.sleep(1.0)
+        while True:
+            try:
+                raw = input(f"\n  [{session.pulse:.0f} us] > ").strip().lower()
+            except EOFError:
+                break
+            if not raw:
+                continue
+            parts = raw.split()
+            cmd, args = parts[0], parts[1:]
 
-        # ── Phase 1: discover range ───────────────────────────────────────
-        left_limit, right_limit = calibrate_range(servo)
-        centre    = (left_limit + right_limit) / 2.0
-        half_range = (right_limit - left_limit) / 2.0
+            if cmd in ("a", "d"):
+                try:
+                    amount = float(args[0]) if args else session.step
+                except ValueError:
+                    print("     Usage: a [us]  /  d [us]")
+                    continue
+                sign = -1.0 if cmd == "a" else 1.0
+                session.goto(session.pulse + sign * amount)
+                dpu = session.deg_per_us()
+                print(f"     -> {session.pulse:.0f} us  (moved ~{amount * dpu:.0f} deg)")
 
-        _prompt(f"Moving to discovered CENTRE ({centre:.1f}°)")
-        servo.set_pan(centre)
-        time.sleep(1.2)
+            elif cmd == "s":
+                try:
+                    session.step = abs(float(args[0]))
+                    print(f"     step = {session.step:.0f} us")
+                except (IndexError, ValueError):
+                    print("     Usage: s us   e.g.  s 5")
 
-        # ── Phase 2: pan tests relative to discovered centre ──────────────
-        print()
-        print("─" * 58)
-        print(f"  Pan tests  (centre = {centre:.1f}°,  range = ±{half_range:.1f}°)")
-        print("─" * 58)
+            elif cmd == "g":
+                try:
+                    session.goto(float(args[0]))
+                    print(f"     -> {session.pulse:.0f} us")
+                except (IndexError, ValueError):
+                    print("     Usage: g us   e.g.  g 1500")
 
-        _prompt("RIGHT +20° nudge")
-        _move(servo, centre + 20, left_limit, right_limit)
+            elif cmd == "l":
+                session.left = session.pulse
+                print(f"     LEFT wall marked at {session.left:.0f} us")
 
-        _prompt(f"CENTRE ({centre:.1f}°)")
-        _move(servo, centre, left_limit, right_limit)
+            elif cmd == "r":
+                session.right = session.pulse
+                print(f"     RIGHT wall marked at {session.right:.0f} us")
 
-        _prompt("LEFT –20° nudge")
-        _move(servo, centre - 20, left_limit, right_limit)
+            elif cmd == "m":
+                session.centre_mark = session.pulse
+                print(f"     CENTRE marked at {session.centre_mark:.0f} us")
 
-        _prompt(f"CENTRE ({centre:.1f}°)")
-        _move(servo, centre, left_limit, right_limit)
+            elif cmd == "c":
+                centre = session.centre_pulse()
+                if centre is None:
+                    print("     No centre yet - mark walls (l, r) or centre (m) first.")
+                else:
+                    session.goto(centre)
+                    print(f"     -> centre ({session.pulse:.0f} us)")
 
-        _prompt("RIGHT +60°")
-        _move(servo, centre + 60, left_limit, right_limit)
+            elif cmd == "v":
+                _verify(session)
 
-        _prompt(f"CENTRE ({centre:.1f}°)")
-        _move(servo, centre, left_limit, right_limit)
+            elif cmd == "p":
+                session.print_status()
 
-        _prompt("LEFT –60°")
-        _move(servo, centre - 60, left_limit, right_limit)
+            elif cmd == "done":
+                if _finish(session):
+                    break
 
-        _prompt(f"CENTRE ({centre:.1f}°)")
-        _move(servo, centre, left_limit, right_limit)
+            elif cmd == "q":
+                print("     Aborting.")
+                break
 
-        _prompt("RIGHT +100° (near mechanical stop)")
-        _move(servo, centre + 100, left_limit, right_limit)
-
-        _prompt(f"CENTRE ({centre:.1f}°)")
-        _move(servo, centre, left_limit, right_limit)
-
-        _prompt("LEFT –100° (near mechanical stop)")
-        _move(servo, centre - 100, left_limit, right_limit)
-
-        _prompt(f"CENTRE ({centre:.1f}°)")
-        _move(servo, centre, left_limit, right_limit)
-
-        _prompt("SLOW SWEEP: centre → left limit → right limit → centre")
-        _sweep_to(servo, centre,      left_limit,  step=1.0, wait=0.06)
-        _sweep_to(servo, left_limit,  right_limit, step=1.0, wait=0.03)
-        _sweep_to(servo, right_limit, centre,      step=1.0, wait=0.06)
-
-        print(f"\n  ✓  All tests done.  Servo is at centre ({centre:.1f}°).\n")
+            else:
+                print(_HELP)
 
     except KeyboardInterrupt:
-        print("\n  Aborted by user.")
+        print("\n  Interrupted.")
 
     finally:
-        # Hold centre pulse for _HOME_HOLD seconds so the servo physically
-        # reaches and stays at centre before the signal is cut.
-        # (Zeroing PWM immediately after set_pan was the cause of the servo
-        # not appearing to return home in the previous version.)
-        park = centre if centre is not None else float(config.PAN_HOME_ANGLE)
-        print(f"  Holding CENTRE ({park:.1f}°) for {_HOME_HOLD:.0f} s before releasing…")
-        servo.set_pan(park)
-        time.sleep(_HOME_HOLD)
         servo.shutdown()
-        print("  Done.")
+        print("  PWM released.  Done.")
 
 
 if __name__ == "__main__":

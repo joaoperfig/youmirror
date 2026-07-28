@@ -167,7 +167,10 @@ class MirrorTracker:
         log.info("No face detected – returning to home position.")
         self._pan_angle  = float(config.PAN_HOME_ANGLE)
         self._tilt_angle = float(config.TILT_HOME_ANGLE)
-        self._servos.home()
+        # Ramp the pan axis: on the multi-turn servo a direct jump home from a
+        # far tracking position would run at full speed.
+        self._servos.ramp_pan(self._pan_angle)
+        self._servos.set_tilt(self._tilt_angle)
 
 
 # ---------------------------------------------------------------------------

@@ -61,7 +61,7 @@ Channels are numbered 0–15 across the top of the HAT.
 
 | Channel | Axis | Direction |
 |---|---|---|
-| 0 | Pan (horizontal / left-right) | 0° = full left, 90° = centre, 180° = full right |
+| 0 | Pan (horizontal / left-right) | Multi-turn servo; rig degrees 0 = left wall … `PAN_TRAVEL_DEG` = right wall (see below) |
 | 1 | Tilt (vertical / up-down) | 0° = full down, 90° = centre, 180° = full up |
 
 > **Do not plug the servo cable in reverse** – the PCA9685 and/or servo will be damaged.
@@ -71,12 +71,15 @@ Channels are numbered 0–15 across the top of the HAT.
 | Parameter | Value |
 |---|---|
 | Frequency | 50 Hz (20 ms period) |
-| Min pulse | 500 µs ≈ 0° |
-| Max pulse | 2500 µs ≈ 180° |
-| Resolution | 12-bit (4096 counts per period) |
+| Min pulse | 500 µs ≈ 0° (tilt axis) |
+| Max pulse | 2500 µs ≈ 180° (tilt axis) |
+| Resolution | 12-bit (4096 counts per period → ~4.9 µs per count at 50 Hz) |
 
 These values match the defaults in `config.py`. Adjust `SERVO_PULSE_MIN_US`
-/ `SERVO_PULSE_MAX_US` if a specific servo doesn't hit its endpoints cleanly.
+/ `SERVO_PULSE_MAX_US` if the tilt servo doesn't hit its endpoints cleanly.
+The **pan axis does not use this mapping** — it uses the pulse endpoints
+measured at the rig's mechanical stops (`PAN_PULSE_LEFT_US` /
+`PAN_PULSE_RIGHT_US`, calibrated with `test_servo_pan.py`).
 
 ### I2C address configuration
 
@@ -152,13 +155,29 @@ not blindly to 90°/90°. Procedure:
 
 ---
 
-## Servos (to be specified)
+## Servos
 
-Two hobby servos are required:
+### Pan servo (channel 0) — multi-turn
+
+The pan servo is **not** a standard 180° hobby servo. Measured on the rig it
+travels roughly **1118° each side of centre (~2236° wall to wall)** before
+hitting the mechanical stops. Consequences:
+
+- Angles for the pan axis are expressed in *rig degrees* across the measured
+  travel, mapped onto the pulse widths measured at the walls
+  (`PAN_PULSE_LEFT_US` / `PAN_PULSE_RIGHT_US` in `config.py`).
+- A tiny pulse change is a large physical move: ~1.1° per µs, i.e. **~5.5° per
+  PCA9685 count** at 50 Hz. Large moves must be ramped (see
+  `ServoController.ramp_pan`) or the servo runs at full speed.
+- There is no position feedback. Calibrate by jogging interactively with
+  `python3 test_servo_pan.py`: touch each wall, mark it, mark the physical
+  centre, and paste the printed values into `config.py`.
+
+### Tilt servo (channel 1) — standard
 
 | Spec | Recommendation |
 |---|---|
-| Type | PWM hobby servo (50 Hz, 500–2500 µs) |
+| Type | PWM hobby servo (50 Hz, 500–2500 µs, 180°) |
 | Torque | ≥ 1.5 kg·cm for a small mirror |
 | Voltage | 5 V (matches HAT output) |
 | Note | Avoid high-torque servos (e.g. MG996R) without external power on VIN |

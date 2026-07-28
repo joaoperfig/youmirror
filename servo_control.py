@@ -41,29 +41,85 @@ class ServoController:
         self._bus = smbus2.SMBus(bus)
         self._address = i2c_address
         self._pwm_freq = pwm_freq
+        # Last commanded pulse per channel (µs) — the controller has no
+        # feedback, so this is the only notion of "current position" we have.
+        self._last_pulse_us: dict[int, float] = {}
         self._init_pca9685()
 
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
+    def set_pulse_us(self, channel: int, pulse_us: float) -> float:
+        """
+        Command a raw pulse width on *channel*.
+
+        Returns the pulse actually set after PCA9685 count quantisation
+        (~4.9 µs granularity at 50 Hz).
+        """
+        count = self._pulse_us_to_count(pulse_us)
+        self._set_pwm(channel, 0, count)
+        actual = count * (1_000_000 / self._pwm_freq) / config.PCA9685_RESOLUTION
+        self._last_pulse_us[channel] = actual
+        return actual
+
+    def ramp_pulse_us(
+        self,
+        channel: int,
+        target_us: float,
+        wait_s: float = 0.04,
+    ) -> float:
+        """
+        Move to *target_us* one PCA9685 count at a time.
+
+        A hobby servo runs at full speed toward any distant setpoint, so
+        every large move must be ramped.  One count is ~4.9 µs; with the
+        default wait this is a calm, steady crawl.  Falls back to a direct
+        set if no previous pulse is known (first command after power-up).
+        """
+        current = self._last_pulse_us.get(channel)
+        if current is None:
+            return self.set_pulse_us(channel, target_us)
+
+        step = (1_000_000 / self._pwm_freq) / config.PCA9685_RESOLUTION
+        direction = 1.0 if target_us > current else -1.0
+        while direction * (target_us - current) > step / 2:
+            current += direction * step
+            if direction * (current - target_us) > 0:
+                current = target_us
+            self.set_pulse_us(channel, current)
+            time.sleep(wait_s)
+        return self.set_pulse_us(channel, target_us)
+
     def set_angle(self, channel: int, angle: float, servo_range: float = 180.0) -> None:
         """
-        Move servo on *channel* to *angle*.
+        Move servo on *channel* to *angle* (used by the tilt axis).
 
-        *servo_range* is the servo's full physical rotation in degrees
-        (e.g. 180 for a standard servo, 236 for the pan servo).
+        *servo_range* is the servo's full physical rotation in degrees.
         The pulse width is scaled linearly across SERVO_PULSE_MIN_US –
         SERVO_PULSE_MAX_US to cover the full *servo_range*.
         """
         angle = max(0.0, min(servo_range, angle))
-        pulse_us = self._angle_to_pulse(angle, servo_range)
-        self._set_pwm(channel, 0, self._pulse_us_to_count(pulse_us))
+        self.set_pulse_us(channel, self._angle_to_pulse(angle, servo_range))
+
+    def pan_angle_to_pulse(self, angle: float) -> float:
+        """Convert pan rig-degrees to pulse µs using the measured wall pulses."""
+        span = config.PAN_PULSE_RIGHT_US - config.PAN_PULSE_LEFT_US
+        return config.PAN_PULSE_LEFT_US + span * (angle / config.PAN_TRAVEL_DEG)
 
     def set_pan(self, angle: float) -> None:
-        """Set pan angle in degrees (0–236, centre = 118)."""
+        """
+        Set pan position in rig degrees (0 = left wall … PAN_TRAVEL_DEG = right
+        wall), clamped to the soft limits.  For moves larger than a few degrees
+        prefer ramp_pan() — the servo travels at full speed otherwise.
+        """
         angle = max(config.PAN_MIN_ANGLE, min(config.PAN_MAX_ANGLE, angle))
-        self.set_angle(config.PAN_CHANNEL, angle, servo_range=config.PAN_SERVO_RANGE)
+        self.set_pulse_us(config.PAN_CHANNEL, self.pan_angle_to_pulse(angle))
+
+    def ramp_pan(self, angle: float, wait_s: float = 0.04) -> None:
+        """Ramped version of set_pan for large moves."""
+        angle = max(config.PAN_MIN_ANGLE, min(config.PAN_MAX_ANGLE, angle))
+        self.ramp_pulse_us(config.PAN_CHANNEL, self.pan_angle_to_pulse(angle), wait_s)
 
     def set_tilt(self, angle: float) -> None:
         """Set tilt angle in degrees (0–180, centre = 90)."""
@@ -71,8 +127,8 @@ class ServoController:
         self.set_angle(config.TILT_CHANNEL, angle, servo_range=config.TILT_SERVO_RANGE)
 
     def home(self) -> None:
-        """Return both axes to their neutral positions."""
-        self.set_pan(config.PAN_HOME_ANGLE)
+        """Return both axes to their neutral positions (pan ramped)."""
+        self.ramp_pan(config.PAN_HOME_ANGLE)
         self.set_tilt(config.TILT_HOME_ANGLE)
 
     def shutdown(self) -> None:
@@ -140,16 +196,22 @@ class ServoController:
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    print(f"Servo test: sweeping pan axis 0° → {config.PAN_SERVO_RANGE}° → home ({config.PAN_HOME_ANGLE}°)")
+    # Gentle sanity wiggle only — full-range calibration lives in
+    # test_servo_pan.py (jogging in raw pulse µs with the walls marked by eye).
+    print(f"Servo test: ±30° pan wiggle around home ({config.PAN_HOME_ANGLE}°)")
     controller = ServoController()
     try:
-        for angle in range(0, config.PAN_SERVO_RANGE + 1, 10):
-            controller.set_pan(angle)
-            time.sleep(0.05)
-        for angle in range(config.PAN_SERVO_RANGE, -1, -10):
-            controller.set_pan(angle)
-            time.sleep(0.05)
-        controller.home()
+        controller.set_pan(config.PAN_HOME_ANGLE)
+        controller.set_tilt(config.TILT_HOME_ANGLE)
+        time.sleep(1.0)
+        for target in (
+            config.PAN_HOME_ANGLE + 30,
+            config.PAN_HOME_ANGLE - 30,
+            config.PAN_HOME_ANGLE,
+        ):
+            controller.ramp_pan(target)
+            time.sleep(0.6)
+        time.sleep(1.0)
         print("Done. Servos at home position.")
     finally:
         controller.shutdown()

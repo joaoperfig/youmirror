@@ -34,33 +34,44 @@ PCA9685_RESOLUTION = 4096
 PAN_CHANNEL  = 0
 TILT_CHANNEL = 1
 
-# Physical rotation range of each servo (degrees, full travel 0 → max).
-# This is the servo's true mechanical range, NOT the PWM angle convention.
-# The pulse-width mapping always spans SERVO_PULSE_MIN_US–SERVO_PULSE_MAX_US
-# across this range, so angles are expressed in the servo's own units.
+# ---------------------------------------------------------------------------
+# Pan axis (channel 0) — multi-turn servo, pulse-calibrated
+# ---------------------------------------------------------------------------
+# The pan servo is a multi-turn unit: measured travel is roughly 1118° each
+# side of centre (~2236° wall to wall), NOT the ~180–270° of a standard hobby
+# servo.  Pan positions are therefore expressed in *rig degrees*
+# (0 = left wall … PAN_TRAVEL_DEG = right wall) and mapped linearly onto the
+# pulse widths measured at the mechanical stops.
 #
-# Pan  servo (channel 0): 236° total travel (118° each direction from centre)
-# Tilt servo (channel 1): 180° total travel (standard hobby servo)
-PAN_SERVO_RANGE  = 236
-TILT_SERVO_RANGE = 180
+# Run `python3 test_servo_pan.py` to jog the servo to each wall interactively
+# and paste the values it prints here.  Until then these are nominal defaults.
+#
+# Resolution note: at 50 Hz the PCA9685 quantises pulses to ~4.9 µs steps,
+# which over 2236° of travel is ~5.5° of pan per step.
+PAN_PULSE_LEFT_US  = 500    # pulse measured at the LEFT wall
+PAN_PULSE_RIGHT_US = 2500   # pulse measured at the RIGHT wall
+PAN_TRAVEL_DEG     = 2236   # measured physical travel between the walls
 
-# Safe software limits for each axis (same units as the servo range above).
-# Clamp movements to these bounds to protect the mirror mechanics.
-PAN_MIN_ANGLE  =   0    # hard left  (0° end of the 236° range)
-PAN_MAX_ANGLE  = 236    # hard right (236° end of the 236° range)
-TILT_MIN_ANGLE =  60
-TILT_MAX_ANGLE = 120
+# Soft limits: stay clear of the walls (rig degrees).
+PAN_MIN_ANGLE = 60
+PAN_MAX_ANGLE = PAN_TRAVEL_DEG - 60
+
+# Tilt axis (channel 1): standard 180° hobby servo mapped across
+# SERVO_PULSE_MIN_US–SERVO_PULSE_MAX_US.
+TILT_SERVO_RANGE = 180
+TILT_MIN_ANGLE   =  60
+TILT_MAX_ANGLE   = 120
 
 # Neutral / home position when no face is detected (degrees).
 #
-# Pan centre is at 118° (midpoint of 0–236°).
-# Tilt centre is at 90° (midpoint of 0–180°) — update after calibration.
+# Pan home should be the rig's *physical* centre — mark it during the
+# interactive calibration (test_servo_pan.py) and update this value.
 #
 # The camera-behind-mirror design means that when a face is centred in the
 # camera frame the mirror is correctly aimed — so the home position is just
 # where you want the mirror to park when no face is visible.
-PAN_HOME_ANGLE  = 118  # midpoint of 0–236°; update after physical calibration
-TILT_HOME_ANGLE =  90  # update after physical calibration
+PAN_HOME_ANGLE  = PAN_TRAVEL_DEG // 2  # update after physical calibration
+TILT_HOME_ANGLE = 90                   # update after physical calibration
 
 # ---------------------------------------------------------------------------
 # Pi Camera Module Rev 1.3 (OV5647, 5 MP)
@@ -95,8 +106,13 @@ FACE_MIN_SIZE = (60, 60)
 
 # How aggressively the servos chase the face error.
 # Increase if tracking feels sluggish, decrease if it oscillates.
-# Units: degrees of servo movement per pixel of face-center error.
-KP_PAN  = 0.05
+# Units: degrees of axis movement per pixel of face-center error.
+#
+# The camera sees ~54° across 320 px ≈ 0.17°/px, and the camera pans with the
+# rig 1:1, so a gain of 0.17 would fully correct the error in one step.
+# Pan uses real rig degrees (see pan calibration above), so its gain must be
+# below that; start conservative and tune on the rig.
+KP_PAN  = 0.12
 KP_TILT = 0.05
 
 # Dead-band: ignore face-center errors smaller than this many pixels.
