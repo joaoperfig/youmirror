@@ -44,6 +44,12 @@ class ServoController:
         # Last commanded pulse per channel (µs) — the controller has no
         # feedback, so this is the only notion of "current position" we have.
         self._last_pulse_us: dict[int, float] = {}
+        # Pan dead-reckoning state (continuous-rotation servo): commanded
+        # direction, when it was last changed/integrated, and the estimated
+        # position in degrees relative to the startup orientation.
+        self._pan_dir: int = 0
+        self._pan_last_t: float = time.monotonic()
+        self._pan_est_deg: float = 0.0
         self._init_pca9685()
 
     # ------------------------------------------------------------------
@@ -102,24 +108,69 @@ class ServoController:
         angle = max(0.0, min(servo_range, angle))
         self.set_pulse_us(channel, self._angle_to_pulse(angle, servo_range))
 
-    def pan_angle_to_pulse(self, angle: float) -> float:
-        """Convert pan rig-degrees to pulse µs using the measured wall pulses."""
-        span = config.PAN_PULSE_RIGHT_US - config.PAN_PULSE_LEFT_US
-        return config.PAN_PULSE_LEFT_US + span * (angle / config.PAN_TRAVEL_DEG)
+    # -- Pan axis: continuous-rotation servo (velocity + dead reckoning) --
+    #
+    # The pan servo has no positions: pulses at/below PAN_MOVE_LEFT_US rotate
+    # left, at/above PAN_MOVE_RIGHT_US rotate right, and pulses in between
+    # stop it.  Position is estimated by integrating commanded direction ×
+    # measured speed × time.  Zero = wherever the rig pointed at startup, so
+    # start with the mirror physically centred.  Call pan_drive()/pan_stop()
+    # regularly (every tracking frame) so soft limits are enforced promptly.
 
-    def set_pan(self, angle: float) -> None:
-        """
-        Set pan position in rig degrees (0 = left wall … PAN_TRAVEL_DEG = right
-        wall), clamped to the soft limits.  For moves larger than a few degrees
-        prefer ramp_pan() — the servo travels at full speed otherwise.
-        """
-        angle = max(config.PAN_MIN_ANGLE, min(config.PAN_MAX_ANGLE, angle))
-        self.set_pulse_us(config.PAN_CHANNEL, self.pan_angle_to_pulse(angle))
+    def pan_stop(self) -> None:
+        """Stop pan rotation (centre of the dead band)."""
+        self._pan_apply(0)
 
-    def ramp_pan(self, angle: float, wait_s: float = 0.04) -> None:
-        """Ramped version of set_pan for large moves."""
-        angle = max(config.PAN_MIN_ANGLE, min(config.PAN_MAX_ANGLE, angle))
-        self.ramp_pulse_us(config.PAN_CHANNEL, self.pan_angle_to_pulse(angle), wait_s)
+    def pan_drive(self, direction: int) -> None:
+        """
+        Rotate the pan axis: -1 = toward left wall, +1 = toward right wall,
+        0 = stop.  Refuses to drive past the estimated soft limit and stops
+        instead.
+        """
+        direction = int(direction)
+        if direction != 0:
+            direction = 1 if direction > 0 else -1
+            if self._pan_limit_blocks(direction):
+                direction = 0
+        self._pan_apply(direction)
+
+    def pan_position_deg(self) -> float:
+        """Dead-reckoned pan position in degrees from the startup centre."""
+        self._pan_integrate()
+        return self._pan_est_deg
+
+    def pan_reset_estimate(self, deg: float = 0.0) -> None:
+        """Re-zero the estimate (e.g. after physically re-centring the rig)."""
+        self._pan_integrate()
+        self._pan_est_deg = deg
+
+    def _pan_integrate(self) -> None:
+        now = time.monotonic()
+        dt = now - self._pan_last_t
+        self._pan_last_t = now
+        if self._pan_dir < 0:
+            self._pan_est_deg -= config.PAN_SPEED_LEFT_DPS * dt
+        elif self._pan_dir > 0:
+            self._pan_est_deg += config.PAN_SPEED_RIGHT_DPS * dt
+
+    def _pan_limit_blocks(self, direction: int) -> bool:
+        self._pan_integrate()
+        if direction > 0:
+            return self._pan_est_deg >= config.PAN_SOFT_LIMIT_DEG
+        return self._pan_est_deg <= -config.PAN_SOFT_LIMIT_DEG
+
+    def _pan_apply(self, direction: int) -> None:
+        self._pan_integrate()
+        if direction == self._pan_dir:
+            return
+        if direction < 0:
+            pulse = config.PAN_MOVE_LEFT_US - config.PAN_DRIVE_OFFSET_US
+        elif direction > 0:
+            pulse = config.PAN_MOVE_RIGHT_US + config.PAN_DRIVE_OFFSET_US
+        else:
+            pulse = (config.PAN_MOVE_LEFT_US + config.PAN_MOVE_RIGHT_US) / 2.0
+        self.set_pulse_us(config.PAN_CHANNEL, pulse)
+        self._pan_dir = direction
 
     def set_tilt(self, angle: float) -> None:
         """Set tilt angle in degrees (0–180, centre = 90)."""
@@ -127,12 +178,18 @@ class ServoController:
         self.set_angle(config.TILT_CHANNEL, angle, servo_range=config.TILT_SERVO_RANGE)
 
     def home(self) -> None:
-        """Return both axes to their neutral positions (pan ramped)."""
-        self.ramp_pan(config.PAN_HOME_ANGLE)
+        """
+        Stop pan rotation and centre the tilt axis.
+
+        Pan cannot be homed positionally (no feedback); the tracking loop
+        seeks estimated position 0 instead (see main.py).
+        """
+        self.pan_stop()
         self.set_tilt(config.TILT_HOME_ANGLE)
 
     def shutdown(self) -> None:
-        """Release all channels (zero duty cycle) and close I2C."""
+        """Stop the pan servo, release all channels, and close I2C."""
+        self.pan_stop()          # settle the dead-reckoning state
         for ch in range(16):
             self._set_pwm(ch, 0, 0)
         self._bus.close()
@@ -196,22 +253,20 @@ class ServoController:
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    # Gentle sanity wiggle only — full-range calibration lives in
-    # test_servo_pan.py (jogging in raw pulse µs with the walls marked by eye).
-    print(f"Servo test: ±30° pan wiggle around home ({config.PAN_HOME_ANGLE}°)")
+    # Quick sanity wiggle: short velocity pulses each way, then stop.
+    # Full calibration (dead band, speeds) lives in test_servo_pan.py.
+    print("Pan velocity test: 0.5 s left, 0.5 s right, stop.")
     controller = ServoController()
     try:
-        controller.set_pan(config.PAN_HOME_ANGLE)
         controller.set_tilt(config.TILT_HOME_ANGLE)
-        time.sleep(1.0)
-        for target in (
-            config.PAN_HOME_ANGLE + 30,
-            config.PAN_HOME_ANGLE - 30,
-            config.PAN_HOME_ANGLE,
-        ):
-            controller.ramp_pan(target)
-            time.sleep(0.6)
-        time.sleep(1.0)
-        print("Done. Servos at home position.")
+        controller.pan_drive(-1)
+        time.sleep(0.5)
+        controller.pan_stop()
+        time.sleep(0.5)
+        controller.pan_drive(+1)
+        time.sleep(0.5)
+        controller.pan_stop()
+        print(f"Estimated pan position: {controller.pan_position_deg():+.0f} deg "
+              "(should be ~0 if speeds are calibrated symmetrically)")
     finally:
         controller.shutdown()

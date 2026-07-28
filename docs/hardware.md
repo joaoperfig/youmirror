@@ -172,21 +172,36 @@ not blindly to 90°/90°. Procedure:
 
 ## Servos
 
-### Pan servo (channel 0) — multi-turn
+### Pan servo (channel 0) — continuous rotation
 
-The pan servo is **not** a standard 180° hobby servo. Measured on the rig it
-travels roughly **1118° each side of centre (~2236° wall to wall)** before
-hitting the mechanical stops. Consequences:
+The pan servo is a **continuous-rotation** unit: the pulse commands **speed
+and direction, not position**. Measured on the rig:
 
-- Angles for the pan axis are expressed in *rig degrees* across the measured
-  travel, mapped onto the pulse widths measured at the walls
-  (`PAN_PULSE_LEFT_US` / `PAN_PULSE_RIGHT_US` in `config.py`).
-- A tiny pulse change is a large physical move: ~1.1° per µs, i.e. **~5.5° per
-  PCA9685 count** at 50 Hz. Large moves must be ramped (see
-  `ServoController.ramp_pan`) or the servo runs at full speed.
-- There is no position feedback. Calibrate by jogging interactively with
-  `python3 test_servo_pan.py`: touch each wall, mark it, mark the physical
-  centre, and paste the printed values into `config.py`.
+| Pulse | Behaviour |
+|---|---|
+| ≤ ~1500 µs | rotates toward the left wall |
+| ~1500–1616 µs | stopped (dead band) |
+| ≥ ~1616 µs | rotates toward the right wall |
+
+The rig's mechanical stops are ~1118° each side of centre (~2236° wall to
+wall, over 3 full turns each way).
+
+**Control model.** The camera closes the tracking loop (rotate toward the
+face, stop when it is centred in frame), so absolute position is never
+needed for tracking. To keep the rig off its mechanical stops, position is
+**dead-reckoned**: estimated degrees = commanded direction × measured speed
+× time (`ServoController.pan_position_deg`). Soft limits refuse to drive
+past ±`PAN_SOFT_LIMIT_DEG` of estimated excursion.
+
+Caveats of dead reckoning:
+
+- The estimate is zeroed wherever the rig points at startup — **start the
+  system with the mirror physically centred**.
+- The estimate drifts over time (speed varies with load and supply voltage);
+  the soft-limit margin is deliberately generous to absorb this.
+
+Calibrate the dead-band edges and the per-direction speeds with
+`python3 test_servo_pan.py` and paste the printed values into `config.py`.
 
 ### Tilt servo (channel 1) — standard
 
