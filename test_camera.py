@@ -65,6 +65,11 @@ def main() -> None:
 
     print("  Frame captured OK.\n")
 
+    # Save the frame so it can be inspected visually (copy off the Pi with scp)
+    import cv2
+    cv2.imwrite("test_frame.jpg", frame)
+    print("  Saved frame to test_frame.jpg\n")
+
     # ── Dimensions ─────────────────────────────────────────────────────────
     h, w, ch = frame.shape
     print(f"  Dimensions : {w} × {h} px, {ch} channels (BGR)")
