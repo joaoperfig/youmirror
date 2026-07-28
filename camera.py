@@ -35,45 +35,11 @@ from libcamera import Transform  # type: ignore  # available only on the Pi
 import config
 
 
-def _find_cascade_path() -> pathlib.Path:
-    """
-    Locate the bundled Haar cascade XML file.
-
-    The location differs depending on how OpenCV was installed:
-      - pip (opencv-python / opencv-python-headless): <cv2 package dir>/data/
-      - apt (python3-opencv): a system-wide share directory, varies by distro
-
-    Try the known locations in order and use whichever exists.
-    """
-    candidates = []
-
-    # pip-installed opencv-python(-headless) exposes this helper attribute
-    data_attr = getattr(cv2, "data", None)
-    if data_attr is not None:
-        candidates.append(pathlib.Path(data_attr.haarcascades) / "haarcascade_frontalface_default.xml")
-
-    # pip package layout: <cv2 pkg dir>/data/...
-    candidates.append(
-        pathlib.Path(cv2.__file__).parent / "data" / "haarcascade_frontalface_default.xml"
-    )
-
-    # apt (Debian/Raspberry Pi OS) package layouts
-    candidates.append(pathlib.Path("/usr/share/opencv4/haarcascades/haarcascade_frontalface_default.xml"))
-    candidates.append(pathlib.Path("/usr/share/opencv/haarcascades/haarcascade_frontalface_default.xml"))
-
-    for path in candidates:
-        if path.is_file():
-            return path
-
-    tried = "\n".join(f"  - {p}" for p in candidates)
-    raise FileNotFoundError(
-        "Could not locate haarcascade_frontalface_default.xml. Tried:\n"
-        f"{tried}\n"
-        "Find it manually with: sudo find / -iname 'haarcascade_frontalface_default.xml'"
-    )
-
-
-_CASCADE_PATH = _find_cascade_path()
+# The Haar cascade XML is vendored into the repo (data/) because the apt
+# python3-opencv package on Raspberry Pi OS does not ship the cascade files.
+_CASCADE_PATH = (
+    pathlib.Path(__file__).parent / "data" / "haarcascade_frontalface_default.xml"
+)
 
 
 @dataclass
@@ -127,7 +93,8 @@ class CameraController:
         if self._detector.empty():
             raise RuntimeError(
                 f"Failed to load Haar cascade from {_CASCADE_PATH}. "
-                "Ensure opencv-python is correctly installed."
+                "The file is vendored in the repo's data/ folder — "
+                "make sure it was pulled correctly."
             )
 
         # Give the sensor a moment to adjust exposure after start

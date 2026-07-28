@@ -54,11 +54,14 @@ class MirrorTracker:
 
     def __init__(self, debug: bool = False) -> None:
         self._debug = debug
-        self._pan_angle  = float(config.PAN_HOME_ANGLE)
         self._tilt_angle = float(config.TILT_HOME_ANGLE)
         self._running = False
 
         log.info("Initialising servo controller…")
+        log.info(
+            "Pan is dead-reckoned from the startup orientation — "
+            "make sure the mirror is physically centred now."
+        )
         self._servos = ServoController()
         self._servos.home()
 
@@ -96,17 +99,19 @@ class MirrorTracker:
                             face.cx, face.cy, error_x, error_y,
                         )
 
-                    # Pan: face right of centre → increase pan angle (turn right)
-                    self._pan_angle = self._update_axis(
-                        self._pan_angle,
-                        error_x,
-                        config.KP_PAN,
-                        config.PAN_MIN_ANGLE,
-                        config.PAN_MAX_ANGLE,
-                        invert=False,
-                    )
+                    # Pan (continuous-rotation servo): rotate toward the face,
+                    # stop once it is inside the dead band.  The camera closes
+                    # this loop, so no position is needed — the controller's
+                    # dead-reckoned soft limits keep us off the walls.
+                    if abs(error_x) <= config.DEAD_BAND_PX:
+                        self._servos.pan_stop()
+                    else:
+                        direction = 1 if error_x > 0 else -1
+                        if config.PAN_INVERT:
+                            direction = -direction
+                        self._servos.pan_drive(direction)
 
-                    # Tilt: face below centre → decrease tilt angle (look down)
+                    # Tilt (positional servo): proportional control as before.
                     self._tilt_angle = self._update_axis(
                         self._tilt_angle,
                         error_y,
@@ -115,15 +120,18 @@ class MirrorTracker:
                         config.TILT_MAX_ANGLE,
                         invert=True,   # positive error → look down → smaller angle
                     )
-
-                    self._servos.set_pan(self._pan_angle)
                     self._servos.set_tilt(self._tilt_angle)
 
                 else:
                     consecutive_misses += 1
-                    if consecutive_misses >= max_misses_before_home:
-                        self._return_home()
-                        consecutive_misses = 0  # only log/move once per absence
+                    if consecutive_misses < max_misses_before_home:
+                        # Face just lost: stop rotating immediately, don't
+                        # keep sweeping on stale information.
+                        self._servos.pan_stop()
+                    else:
+                        if consecutive_misses == max_misses_before_home:
+                            log.info("No face detected – seeking estimated centre.")
+                        self._seek_home()
 
         except KeyboardInterrupt:
             log.info("Interrupted by user.")
@@ -163,13 +171,21 @@ class MirrorTracker:
         new_angle = current_angle + delta
         return max(min_angle, min(max_angle, new_angle))
 
-    def _return_home(self) -> None:
-        log.info("No face detected – returning to home position.")
-        self._pan_angle  = float(config.PAN_HOME_ANGLE)
+    def _seek_home(self) -> None:
+        """
+        One per-frame step toward the startup centre (estimated position 0).
+
+        Called repeatedly while no face is visible; the frame rate provides
+        the pacing.  Dead reckoning is coarse, so we stop within a tolerance
+        rather than hunting for an exact zero.
+        """
+        estimate = self._servos.pan_position_deg()
+        if abs(estimate) <= config.PAN_HOME_TOLERANCE_DEG:
+            self._servos.pan_stop()
+        else:
+            self._servos.pan_drive(-1 if estimate > 0 else +1)
+
         self._tilt_angle = float(config.TILT_HOME_ANGLE)
-        # Ramp the pan axis: on the multi-turn servo a direct jump home from a
-        # far tracking position would run at full speed.
-        self._servos.ramp_pan(self._pan_angle)
         self._servos.set_tilt(self._tilt_angle)
 
 

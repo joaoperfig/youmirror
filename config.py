@@ -35,43 +35,58 @@ PAN_CHANNEL  = 0
 TILT_CHANNEL = 1
 
 # ---------------------------------------------------------------------------
-# Pan axis (channel 0) — multi-turn servo, pulse-calibrated
+# Pan axis (channel 0) — CONTINUOUS-ROTATION servo, velocity controlled
 # ---------------------------------------------------------------------------
-# The pan servo is a multi-turn unit: measured travel is roughly 1118° each
-# side of centre (~2236° wall to wall), NOT the ~180–270° of a standard hobby
-# servo.  Pan positions are therefore expressed in *rig degrees*
-# (0 = left wall … PAN_TRAVEL_DEG = right wall) and mapped linearly onto the
-# pulse widths measured at the mechanical stops.
+# The pan servo is a continuous-rotation unit: the pulse commands SPEED and
+# DIRECTION, not position (measured on the rig):
+#   pulse <= PAN_MOVE_LEFT_US   → rotates toward the left wall
+#   pulse >= PAN_MOVE_RIGHT_US  → rotates toward the right wall
+#   anywhere in between         → stopped
 #
-# Run `python3 test_servo_pan.py` to jog the servo to each wall interactively
-# and paste the values it prints here.  Until then these are nominal defaults.
+# There is no position feedback.  The camera closes the tracking loop
+# (rotate toward the face, stop when centred); position is only *estimated*
+# by dead reckoning (commanded direction × measured speed × time) so the rig
+# can avoid forcing itself against its mechanical stops.
 #
-# Resolution note: at 50 Hz the PCA9685 quantises pulses to ~4.9 µs steps,
-# which over 2236° of travel is ~5.5° of pan per step.
-PAN_PULSE_LEFT_US  = 500    # pulse measured at the LEFT wall
-PAN_PULSE_RIGHT_US = 2500   # pulse measured at the RIGHT wall
-PAN_TRAVEL_DEG     = 2236   # measured physical travel between the walls
+# IMPORTANT: the estimate's zero is wherever the rig points at startup —
+# start the system with the mirror physically centred.  The estimate drifts
+# over time; the soft-limit margin below absorbs that.
+#
+# Calibrate all of this with `python3 test_servo_pan.py`.
+PAN_MOVE_LEFT_US  = 1500   # highest pulse that still rotates left
+PAN_MOVE_RIGHT_US = 1616   # lowest pulse that rotates right
 
-# Soft limits: stay clear of the walls (rig degrees).
-PAN_MIN_ANGLE = 60
-PAN_MAX_ANGLE = PAN_TRAVEL_DEG - 60
+# Extra pulse beyond the movement threshold while driving.  0 = slowest
+# creep; larger = faster.  Speeds below must be measured at this offset.
+PAN_DRIVE_OFFSET_US = 50
 
-# Tilt axis (channel 1): standard 180° hobby servo mapped across
-# SERVO_PULSE_MIN_US–SERVO_PULSE_MAX_US.
+# Measured rotation speed at the drive pulses (degrees per second).
+# These WILL differ per direction — measure both with test_servo_pan.py.
+PAN_SPEED_LEFT_DPS  = 200.0
+PAN_SPEED_RIGHT_DPS = 200.0
+
+# Rig geometry: measured wall-to-wall travel, and how far the *estimated*
+# position may stray from centre before the software refuses to drive
+# further in that direction.  Margin is generous because dead reckoning
+# drifts.
+PAN_TRAVEL_DEG     = 2236
+PAN_SOFT_LIMIT_DEG = PAN_TRAVEL_DEG // 2 - 200   # ±918° from centre
+
+# Flip if the mirror runs away from the face instead of toward it.
+PAN_INVERT = False
+
+# "Home" for the pan axis is estimated position 0 (the startup centre).
+# Stop seeking once the estimate is within this tolerance.
+PAN_HOME_TOLERANCE_DEG = 25
+
+# ---------------------------------------------------------------------------
+# Tilt axis (channel 1) — standard positional hobby servo
+# ---------------------------------------------------------------------------
+# Mapped across SERVO_PULSE_MIN_US–SERVO_PULSE_MAX_US.
 TILT_SERVO_RANGE = 180
 TILT_MIN_ANGLE   =  60
 TILT_MAX_ANGLE   = 120
-
-# Neutral / home position when no face is detected (degrees).
-#
-# Pan home should be the rig's *physical* centre — mark it during the
-# interactive calibration (test_servo_pan.py) and update this value.
-#
-# The camera-behind-mirror design means that when a face is centred in the
-# camera frame the mirror is correctly aimed — so the home position is just
-# where you want the mirror to park when no face is visible.
-PAN_HOME_ANGLE  = PAN_TRAVEL_DEG // 2  # update after physical calibration
-TILT_HOME_ANGLE = 90                   # update after physical calibration
+TILT_HOME_ANGLE  =  90  # update after physical calibration
 
 # ---------------------------------------------------------------------------
 # Pi Camera Module Rev 1.3 (OV5647, 5 MP)
@@ -104,16 +119,14 @@ FACE_MIN_SIZE = (60, 60)
 # Tracking controller (proportional gain)
 # ---------------------------------------------------------------------------
 
-# How aggressively the servos chase the face error.
-# Increase if tracking feels sluggish, decrease if it oscillates.
-# Units: degrees of axis movement per pixel of face-center error.
-#
-# The camera sees ~54° across 320 px ≈ 0.17°/px, and the camera pans with the
-# rig 1:1, so a gain of 0.17 would fully correct the error in one step.
-# Pan uses real rig degrees (see pan calibration above), so its gain must be
-# below that; start conservative and tune on the rig.
-KP_PAN  = 0.12
+# Tilt is positional: proportional gain in degrees of tilt per pixel of
+# face-centre error.  Increase if sluggish, decrease if it oscillates.
 KP_TILT = 0.05
+
+# Pan is velocity controlled (continuous-rotation servo): it simply rotates
+# toward the face whenever the horizontal error exceeds DEAD_BAND_PX and
+# stops inside it, so there is no pan gain to tune — only the drive speed
+# (PAN_DRIVE_OFFSET_US above).
 
 # Dead-band: ignore face-center errors smaller than this many pixels.
 # Prevents the mirror from constantly hunting when the face is nearly centred.
