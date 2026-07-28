@@ -1,0 +1,27 @@
+# youmirror – Python dependencies
+#
+# Install on the Raspberry Pi with:
+#   pip install -r requirements.txt
+#
+# Some packages (picamera, RPi.GPIO) are Raspberry Pi–specific and will not
+# install on a regular PC. smbus2 and opencv-python-headless will install
+# anywhere and can be used for offline development/simulation.
+#
+# System packages required before pip install (run once on the Pi):
+#   sudo apt-get update
+#   sudo apt-get install -y python3-pip python3-dev libopencv-dev
+#   sudo apt-get install -y python3-smbus i2c-tools
+#   sudo apt-get install -y python3-picamera   # or via pip below
+
+# I2C communication with PCA9685
+smbus2
+
+# OpenCV – headless build (no GUI deps) appropriate for a Pi running OS Lite
+opencv-python-headless
+
+# NumPy (pulled in by OpenCV but listed explicitly for clarity)
+numpy
+
+# Official Pi Camera library (legacy picamera, for Raspberry Pi OS Legacy)
+# This is pre-installed on most Pi OS images; include here for completeness.
+picamera
