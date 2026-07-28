@@ -34,16 +34,33 @@ PCA9685_RESOLUTION = 4096
 PAN_CHANNEL  = 0
 TILT_CHANNEL = 1
 
-# Safe angular range for each axis (degrees).
+# Physical rotation range of each servo (degrees, full travel 0 → max).
+# This is the servo's true mechanical range, NOT the PWM angle convention.
+# The pulse-width mapping always spans SERVO_PULSE_MIN_US–SERVO_PULSE_MAX_US
+# across this range, so angles are expressed in the servo's own units.
+#
+# Pan  servo (channel 0): 236° total travel (118° each direction from centre)
+# Tilt servo (channel 1): 180° total travel (standard hobby servo)
+PAN_SERVO_RANGE  = 236
+TILT_SERVO_RANGE = 180
+
+# Safe software limits for each axis (same units as the servo range above).
 # Clamp movements to these bounds to protect the mirror mechanics.
-PAN_MIN_ANGLE  =  30
-PAN_MAX_ANGLE  = 150
+PAN_MIN_ANGLE  =   0    # hard left  (0° end of the 236° range)
+PAN_MAX_ANGLE  = 236    # hard right (236° end of the 236° range)
 TILT_MIN_ANGLE =  60
 TILT_MAX_ANGLE = 120
 
-# Neutral / home position when no face is detected (degrees)
-PAN_HOME_ANGLE  = 90
-TILT_HOME_ANGLE = 90
+# Neutral / home position when no face is detected (degrees).
+#
+# Pan centre is at 118° (midpoint of 0–236°).
+# Tilt centre is at 90° (midpoint of 0–180°) — update after calibration.
+#
+# The camera-behind-mirror design means that when a face is centred in the
+# camera frame the mirror is correctly aimed — so the home position is just
+# where you want the mirror to park when no face is visible.
+PAN_HOME_ANGLE  = 118  # midpoint of 0–236°; update after physical calibration
+TILT_HOME_ANGLE =  90  # update after physical calibration
 
 # ---------------------------------------------------------------------------
 # Pi Camera Module Rev 1.3 (OV5647, 5 MP)

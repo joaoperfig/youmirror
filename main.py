@@ -1,15 +1,24 @@
 """
 youmirror – main tracking loop.
 
-Reads frames from the Pi Camera, detects the user's face with OpenCV, and
-drives the pan/tilt servo rig to keep the face centred in the mirror.
+Physical setup
+--------------
+The Pi Camera is rigidly mounted behind the mirror, centred on it and looking
+through it at the user. Camera and mirror move as a single unit on the
+pan/tilt rig. This means:
+
+  - When a face is centred in the camera frame, the mirror is correctly aimed.
+  - The error signal is already in the mirror's own reference frame — no
+    coordinate transformation is needed.
+  - Corrections are always relative ("a bit more left", "a bit more up") rather
+    than absolute angle commands.
 
 Control strategy
 ----------------
 A simple proportional controller is used for each axis:
 
-    error_px  = face_centre - frame_centre   (pixels)
-    Δangle    = Kp * error_px               (degrees)
+    error_px  = face_centre_px - frame_centre_px   (pixels)
+    Δangle    = Kp * error_px                      (degrees)
     new_angle = current_angle + Δangle
 
 A dead-band prevents constant hunting when the face is nearly centred.
@@ -18,7 +27,7 @@ Extend to PID by adding integral and derivative terms in _update_axis().
 Usage
 -----
     python main.py            # run normally
-    python main.py --debug    # overlay face rectangle on frame and print errors
+    python main.py --debug    # print face-error values each frame
 """
 
 import argparse

@@ -123,6 +123,35 @@ the Pi Zero's CSI connector. The metal contacts face toward the PCB.
 
 ---
 
+## Camera-behind-mirror design
+
+The Pi Camera is mounted on the back of the mirror, centred on it, looking
+through the mirror at the user. The camera and mirror are a single rigid
+assembly on the pan/tilt rig.
+
+**Why this simplifies control:**
+
+- When the user's face is centred in the camera frame, the mirror is already
+  aimed correctly at the user's face — no geometric transformation needed.
+- All servo corrections are relative: "face is 30 px to the right of frame
+  centre → pan right by `Kp × 30` degrees."
+- The system only ever issues incremental adjustments ("a bit more left/up"),
+  not absolute angle targets.
+
+**Home position calibration:**
+
+The `PAN_HOME_ANGLE` and `TILT_HOME_ANGLE` values in `config.py` must be set
+to the angles where the mirror points straight ahead at a standing user —
+not blindly to 90°/90°. Procedure:
+
+1. Mount the mirror/camera assembly on the rig.
+2. Stand in front of the mirror at the expected use distance.
+3. Run `python3 servo_control.py` and manually command angles until the mirror
+   reflects your face back at you centred.
+4. Record those angles and update `PAN_HOME_ANGLE` / `TILT_HOME_ANGLE`.
+
+---
+
 ## Servos (to be specified)
 
 Two hobby servos are required:

@@ -47,19 +47,28 @@ class ServoController:
     # Public API
     # ------------------------------------------------------------------
 
-    def set_angle(self, channel: int, angle: float) -> None:
-        """Move servo on *channel* to *angle* (0–180 degrees)."""
-        angle = max(0.0, min(180.0, angle))
-        pulse_us = self._angle_to_pulse(angle)
+    def set_angle(self, channel: int, angle: float, servo_range: float = 180.0) -> None:
+        """
+        Move servo on *channel* to *angle*.
+
+        *servo_range* is the servo's full physical rotation in degrees
+        (e.g. 180 for a standard servo, 236 for the pan servo).
+        The pulse width is scaled linearly across SERVO_PULSE_MIN_US –
+        SERVO_PULSE_MAX_US to cover the full *servo_range*.
+        """
+        angle = max(0.0, min(servo_range, angle))
+        pulse_us = self._angle_to_pulse(angle, servo_range)
         self._set_pwm(channel, 0, self._pulse_us_to_count(pulse_us))
 
     def set_pan(self, angle: float) -> None:
+        """Set pan angle in degrees (0–236, centre = 118)."""
         angle = max(config.PAN_MIN_ANGLE, min(config.PAN_MAX_ANGLE, angle))
-        self.set_angle(config.PAN_CHANNEL, angle)
+        self.set_angle(config.PAN_CHANNEL, angle, servo_range=config.PAN_SERVO_RANGE)
 
     def set_tilt(self, angle: float) -> None:
+        """Set tilt angle in degrees (0–180, centre = 90)."""
         angle = max(config.TILT_MIN_ANGLE, min(config.TILT_MAX_ANGLE, angle))
-        self.set_angle(config.TILT_CHANNEL, angle)
+        self.set_angle(config.TILT_CHANNEL, angle, servo_range=config.TILT_SERVO_RANGE)
 
     def home(self) -> None:
         """Return both axes to their neutral positions."""
@@ -109,10 +118,10 @@ class ServoController:
             [on & 0xFF, on >> 8, off & 0xFF, off >> 8],
         )
 
-    def _angle_to_pulse(self, angle: float) -> float:
-        """Convert degrees (0–180) to pulse width in microseconds."""
+    def _angle_to_pulse(self, angle: float, servo_range: float) -> float:
+        """Convert *angle* (0–*servo_range* degrees) to pulse width in µs."""
         span = config.SERVO_PULSE_MAX_US - config.SERVO_PULSE_MIN_US
-        return config.SERVO_PULSE_MIN_US + span * (angle / 180.0)
+        return config.SERVO_PULSE_MIN_US + span * (angle / servo_range)
 
     def _pulse_us_to_count(self, pulse_us: float) -> int:
         """Convert a pulse width (µs) to a PCA9685 12-bit tick count."""
@@ -131,13 +140,13 @@ class ServoController:
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    print("Servo test: sweeping pan axis 0° → 180° → 90°")
+    print(f"Servo test: sweeping pan axis 0° → {config.PAN_SERVO_RANGE}° → home ({config.PAN_HOME_ANGLE}°)")
     controller = ServoController()
     try:
-        for angle in range(0, 181, 10):
+        for angle in range(0, config.PAN_SERVO_RANGE + 1, 10):
             controller.set_pan(angle)
             time.sleep(0.05)
-        for angle in range(180, -1, -10):
+        for angle in range(config.PAN_SERVO_RANGE, -1, -10):
             controller.set_pan(angle)
             time.sleep(0.05)
         controller.home()
