@@ -9,15 +9,18 @@
 #
 # System packages required before pip install (run once on the Pi):
 #   sudo apt-get update
-#   sudo apt-get install -y python3-pip python3-dev libopencv-dev
+#   sudo apt-get install -y python3-pip python3-dev
 #   sudo apt-get install -y python3-smbus i2c-tools
 #   sudo apt-get install -y python3-picamera   # or via pip below
+#
+# On armv6l (Pi Zero / Pi 1) OpenCV has no usable pip wheel – install via apt:
+#   sudo apt-get install -y python3-opencv
+#
+# On armv7l / armv8 / x86-64 you can instead let pip install it:
+#   pip install opencv-python-headless
 
 # I2C communication with PCA9685
 smbus2
-
-# OpenCV – headless build (no GUI deps) appropriate for a Pi running OS Lite
-opencv-python-headless
 
 # NumPy (pulled in by OpenCV but listed explicitly for clarity)
 numpy
