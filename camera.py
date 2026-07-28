@@ -118,18 +118,30 @@ class CameraController:
         face in frame.
         """
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+
+        # Detect on a downscaled copy — quadratically cheaper on the Zero W.
+        # Coordinates are scaled back to full-frame pixels below.
+        s = config.DETECTION_DOWNSCALE
+        if s > 1:
+            gray = cv2.resize(
+                gray,
+                (gray.shape[1] // s, gray.shape[0] // s),
+                interpolation=cv2.INTER_AREA,
+            )
+
         faces = self._detector.detectMultiScale(
             gray,
             scaleFactor=config.FACE_SCALE_FACTOR,
             minNeighbors=config.FACE_MIN_NEIGHBOURS,
-            minSize=config.FACE_MIN_SIZE,
+            minSize=(config.FACE_MIN_SIZE[0] // s, config.FACE_MIN_SIZE[1] // s),
         )
 
         if len(faces) == 0:
             return None
 
-        # Pick the largest face by area
+        # Pick the largest face by area, then scale back to full-frame pixels
         x, y, w, h = max(faces, key=lambda r: r[2] * r[3])
+        x, y, w, h = x * s, y * s, w * s, h * s
         return FaceLocation(
             cx=x + w // 2,
             cy=y + h // 2,

@@ -110,8 +110,18 @@ CAMERA_ROTATION = 0
 # Face detection (OpenCV Haar cascade)
 # ---------------------------------------------------------------------------
 
-# Scale factor for the image pyramid in detectMultiScale
-FACE_SCALE_FACTOR = 1.1
+# Downscale factor applied to the frame before running detection.
+# 2 = detect on 160×120 instead of 320×240 (~4× faster). Coordinates are
+# scaled back to full-frame pixels afterwards, so callers see no difference.
+# Trade-off: the Haar window is 24 px, so the smallest detectable face is
+# 24 × DETECTION_DOWNSCALE px in full-frame terms (48 px at downscale 2).
+# Set to 1 to detect at full resolution (much slower on the Pi Zero W).
+DETECTION_DOWNSCALE = 2
+
+# Scale factor for the image pyramid in detectMultiScale.
+# Larger = fewer pyramid levels = faster, but coarser size coverage.
+# 1.1 was measured at ~1.4 s/frame on the Pi Zero W; 1.2 roughly halves it.
+FACE_SCALE_FACTOR = 1.2
 
 # Minimum neighbours a rectangle must have to be retained.
 # Lower = more sensitive (keeps detections when the face is slightly turned)
