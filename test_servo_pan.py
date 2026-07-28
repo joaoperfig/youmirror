@@ -296,7 +296,7 @@ def _measure_speed(drive: _Drive, direction: int) -> float:
 # ---------------------------------------------------------------------------
 
 def _free_drive(drive: _Drive) -> None:
-    soft = drive.cal.travel_deg / 2.0 - 200.0
+    soft = drive.cal.travel_deg / 2.0 - 30.0
     print("\n  --- Free drive (estimate + soft limits live) ---")
     print("  First drive to the PHYSICAL CENTRE and press z to zero the estimate.")
     print("  a = left   d = right   space/s = stop   z = zero estimate   Enter = finish")
@@ -356,8 +356,8 @@ def _print_config(cal: _Cal) -> None:
     print(f"  PAN_SPEED_RIGHT_DPS = {cal.speed_right_dps:.0f}")
     print(f"  PAN_TRAVEL_DEG     = {cal.travel_deg:.0f}")
     print("  --------------------------------------------------------")
-    print("  Reminder: start main.py with the mirror physically centred -")
-    print("  the position estimate is zeroed at startup.")
+    print("  main.py homes automatically at startup: it touches the left")
+    print("  wall, then drives right for half the travel to find centre.")
 
 
 def main() -> None:

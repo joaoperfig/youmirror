@@ -183,8 +183,8 @@ and direction, not position**. Measured on the rig:
 | ~1500–1616 µs | stopped (dead band) |
 | ≥ ~1616 µs | rotates toward the right wall |
 
-The rig's mechanical stops are ~1118° each side of centre (~2236° wall to
-wall, over 3 full turns each way).
+The rig's mechanical stops are ~118° each side of centre (~236° wall to
+wall). Measured drive speed at the configured offset is ~120°/s each way.
 
 **Control model.** The camera closes the tracking loop (rotate toward the
 face, stop when it is centred in frame), so absolute position is never
@@ -193,12 +193,13 @@ needed for tracking. To keep the rig off its mechanical stops, position is
 × time (`ServoController.pan_position_deg`). Soft limits refuse to drive
 past ±`PAN_SOFT_LIMIT_DEG` of estimated excursion.
 
-Caveats of dead reckoning:
-
-- The estimate is zeroed wherever the rig points at startup — **start the
-  system with the mirror physically centred**.
-- The estimate drifts over time (speed varies with load and supply voltage);
-  the soft-limit margin is deliberately generous to absorb this.
+**Startup homing.** The estimate is anchored automatically when `main.py`
+starts (`ServoController.pan_home`): the rig drives left long enough to
+guarantee touching the left wall from any starting position (a brief,
+gentle stall), then drives right for half the travel time — that point is
+the physical centre and the estimate is zeroed there. The estimate still
+drifts slowly afterwards (speed varies with load and supply voltage); the
+soft-limit margin absorbs this.
 
 Calibrate the dead-band edges and the per-direction speeds with
 `python3 test_servo_pan.py` and paste the printed values into `config.py`.

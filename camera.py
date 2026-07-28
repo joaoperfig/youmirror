@@ -158,18 +158,39 @@ class CameraController:
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    print("Camera test: capturing 30 frames and reporting any detected faces.")
+    N_FRAMES = 60
+    print(f"Camera test: {N_FRAMES} frames at full speed, reporting faces and real FPS.")
     with CameraController() as cam:
         frame_cx, frame_cy = cam.get_frame_center()
-        for i in range(30):
+
+        capture_time = 0.0
+        detect_time = 0.0
+        detections = 0
+        t_start = time.monotonic()
+
+        for i in range(N_FRAMES):
+            t0 = time.monotonic()
             frame = cam.capture_frame()
+            t1 = time.monotonic()
             face = cam.detect_face(frame)
+            t2 = time.monotonic()
+
+            capture_time += t1 - t0
+            detect_time += t2 - t1
+
             if face:
+                detections += 1
                 dx = face.cx - frame_cx
                 dy = face.cy - frame_cy
                 print(f"Frame {i:02d}: face at ({face.cx}, {face.cy})  "
                       f"error dx={dx:+d} dy={dy:+d}")
             else:
                 print(f"Frame {i:02d}: no face detected")
-            time.sleep(0.1)
+
+        total = time.monotonic() - t_start
+
+    print(f"\n  Frames          : {N_FRAMES} ({detections} with a face)")
+    print(f"  Total time      : {total:.2f} s  →  {N_FRAMES / total:.1f} fps end-to-end")
+    print(f"  Avg capture     : {1000 * capture_time / N_FRAMES:.1f} ms/frame")
+    print(f"  Avg detection   : {1000 * detect_time / N_FRAMES:.1f} ms/frame")
     print("Camera test done.")

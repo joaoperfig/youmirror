@@ -58,12 +58,20 @@ class MirrorTracker:
         self._running = False
 
         log.info("Initialising servo controller…")
-        log.info(
-            "Pan is dead-reckoned from the startup orientation — "
-            "make sure the mirror is physically centred now."
-        )
         self._servos = ServoController()
+
+        homing_s = (
+            config.PAN_TRAVEL_DEG / config.PAN_SPEED_LEFT_DPS
+            + config.PAN_HOME_EXTRA_S
+            + config.PAN_TRAVEL_DEG / 2.0 / config.PAN_SPEED_RIGHT_DPS
+        )
+        log.info(
+            "Homing pan: touching the left wall, then centring (~%.1f s)…",
+            homing_s,
+        )
+        self._servos.pan_home()
         self._servos.home()
+        log.info("Pan homed — estimated position zeroed at centre.")
 
         log.info("Initialising camera…")
         self._camera = CameraController()

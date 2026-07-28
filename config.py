@@ -48,12 +48,14 @@ TILT_CHANNEL = 1
 # by dead reckoning (commanded direction × measured speed × time) so the rig
 # can avoid forcing itself against its mechanical stops.
 #
-# IMPORTANT: the estimate's zero is wherever the rig points at startup —
-# start the system with the mirror physically centred.  The estimate drifts
-# over time; the soft-limit margin below absorbs that.
+# The estimate is anchored at startup by wall-referenced homing: main.py
+# drives left long enough to guarantee touching the left wall from any
+# starting position, then right for half the travel — that point is centre
+# (estimated position 0).  The estimate still drifts slowly afterwards; the
+# soft-limit margin absorbs that.
 #
-# Calibrate all of this with `python3 test_servo_pan.py`.
-PAN_MOVE_LEFT_US  = 1500   # highest pulse that still rotates left
+# Calibrated with `python3 test_servo_pan.py`.
+PAN_MOVE_LEFT_US  = 1498   # highest pulse that still rotates left
 PAN_MOVE_RIGHT_US = 1616   # lowest pulse that rotates right
 
 # Extra pulse beyond the movement threshold while driving.  0 = slowest
@@ -61,23 +63,25 @@ PAN_MOVE_RIGHT_US = 1616   # lowest pulse that rotates right
 PAN_DRIVE_OFFSET_US = 50
 
 # Measured rotation speed at the drive pulses (degrees per second).
-# These WILL differ per direction — measure both with test_servo_pan.py.
-PAN_SPEED_LEFT_DPS  = 200.0
-PAN_SPEED_RIGHT_DPS = 200.0
+PAN_SPEED_LEFT_DPS  = 120.0
+PAN_SPEED_RIGHT_DPS = 120.0
 
 # Rig geometry: measured wall-to-wall travel, and how far the *estimated*
 # position may stray from centre before the software refuses to drive
-# further in that direction.  Margin is generous because dead reckoning
-# drifts.
-PAN_TRAVEL_DEG     = 2236
-PAN_SOFT_LIMIT_DEG = PAN_TRAVEL_DEG // 2 - 200   # ±918° from centre
+# further in that direction (30° of margin from each wall).
+PAN_TRAVEL_DEG     = 236
+PAN_SOFT_LIMIT_DEG = PAN_TRAVEL_DEG / 2 - 30   # ±88° from centre
+
+# Extra drive time added to the homing wall-touch so contact is guaranteed
+# from any starting position (brief, gentle stall against the stop).
+PAN_HOME_EXTRA_S = 0.4
 
 # Flip if the mirror runs away from the face instead of toward it.
 PAN_INVERT = False
 
-# "Home" for the pan axis is estimated position 0 (the startup centre).
+# "Home" for the pan axis is estimated position 0 (the homed centre).
 # Stop seeking once the estimate is within this tolerance.
-PAN_HOME_TOLERANCE_DEG = 25
+PAN_HOME_TOLERANCE_DEG = 10
 
 # ---------------------------------------------------------------------------
 # Tilt axis (channel 1) — standard positional hobby servo
@@ -109,11 +113,13 @@ CAMERA_ROTATION = 0
 # Scale factor for the image pyramid in detectMultiScale
 FACE_SCALE_FACTOR = 1.1
 
-# Minimum neighbours a rectangle must have to be retained
-FACE_MIN_NEIGHBOURS = 5
+# Minimum neighbours a rectangle must have to be retained.
+# Lower = more sensitive (keeps detections when the face is slightly turned)
+# but also more prone to false positives.
+FACE_MIN_NEIGHBOURS = 3
 
 # Minimum face size in pixels (filters out noise on a 320×240 frame)
-FACE_MIN_SIZE = (60, 60)
+FACE_MIN_SIZE = (40, 40)
 
 # ---------------------------------------------------------------------------
 # Tracking controller (proportional gain)

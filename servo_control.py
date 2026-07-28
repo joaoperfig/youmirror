@@ -121,6 +121,28 @@ class ServoController:
         """Stop pan rotation (centre of the dead band)."""
         self._pan_apply(0)
 
+    def pan_home(self) -> None:
+        """
+        Anchor the position estimate by wall-referenced homing (blocking).
+
+        Drives left long enough to guarantee reaching the left wall from any
+        starting position (ending in a brief, gentle stall against the stop),
+        then drives right for half the travel time — that point is the
+        physical centre, and the estimate is zeroed there.  Bypasses the
+        soft limits, which are meaningless until this has run.
+        """
+        left_s = config.PAN_TRAVEL_DEG / config.PAN_SPEED_LEFT_DPS + config.PAN_HOME_EXTRA_S
+        right_s = (config.PAN_TRAVEL_DEG / 2.0) / config.PAN_SPEED_RIGHT_DPS
+
+        self._pan_apply(-1)
+        time.sleep(left_s)
+        self._pan_apply(0)
+        time.sleep(0.3)          # let the mechanics settle off the wall
+        self._pan_apply(+1)
+        time.sleep(right_s)
+        self._pan_apply(0)
+        self.pan_reset_estimate(0.0)
+
     def pan_drive(self, direction: int) -> None:
         """
         Rotate the pan axis: -1 = toward left wall, +1 = toward right wall,
