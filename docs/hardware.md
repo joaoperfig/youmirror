@@ -108,12 +108,27 @@ in `config.py` if the pads are changed.
 
 Enable the camera (one-time setup):
 
+> `raspi-config` does not have a Camera option on this OS version. Add the
+> lines directly to the firmware config instead. Note the path is
+> `/boot/firmware/config.txt` on this OS, not the older `/boot/config.txt`.
+
 ```bash
-sudo raspi-config   # → Interface Options → Camera → Enable
+echo "start_x=1"       | sudo tee -a /boot/firmware/config.txt
+echo "gpu_mem=128"      | sudo tee -a /boot/firmware/config.txt
+echo "dtoverlay=ov5647" | sudo tee -a /boot/firmware/config.txt
 sudo reboot
-# Verify:
-vcgencmd get_camera   # should return: supported=1 detected=1
+
+# Verify via libcamera/picamera2 (this project's camera stack):
+python3 -c "from picamera2 import Picamera2; print(Picamera2.global_camera_info())"
+# expect a list containing {'Model': 'ov5647', ...}
 ```
+
+**Why not the legacy `picamera` library / `vcgencmd get_camera`?** On this
+Pi's kernel/firmware, the legacy MMAL camera stack fails to detect the
+OV5647 (`vcgencmd get_camera` reports `detected=0`) even though the sensor
+is physically fine. `picamera2` (built on libcamera) detects and drives it
+correctly, so this project uses that instead. See `requirements.txt` and
+the README for the apt-based install (picamera2 should not be pip-installed).
 
 The tracker captures at **320 × 240 @ 24 fps** by default (configurable in
 `config.py`). The OV5647 delivers good low-light performance for an indoor

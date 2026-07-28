@@ -53,12 +53,21 @@ address configuration, PWM parameters, and servo power notes.
 
 > Tested on **Raspberry Pi Zero W v1.1**, **Raspberry Pi OS Lite Legacy**.
 > On this OS the firmware config is at `/boot/firmware/config.txt`.
+>
+> **Camera stack note:** this project uses `picamera2` (libcamera), not the
+> legacy `picamera`/MMAL stack. On this Pi's kernel/firmware, the legacy
+> stack fails to detect the OV5647 sensor (`vcgencmd get_camera` reports
+> `detected=0`) even though the sensor itself is fine — libcamera detects
+> and drives it correctly. `picamera2` must be installed via `apt`, not
+> `pip` (see step 6) — pip would otherwise try to build libcamera's Python
+> bindings from source, dragging in FFmpeg dev headers and other heavy
+> native deps that are painful to build on a Pi Zero W.
 
 ```bash
 # 1. Enable I2C
 sudo raspi-config   # Interface Options → I2C → Enable → reboot
 
-# 2. Enable the legacy camera stack (picamera requires this)
+# 2. Enable the camera stack
 #    raspi-config does not have a camera option on this OS version.
 #    Add the lines directly to the correct config file:
 echo "start_x=1"          | sudo tee -a /boot/firmware/config.txt
@@ -66,18 +75,27 @@ echo "gpu_mem=128"         | sudo tee -a /boot/firmware/config.txt
 echo "dtoverlay=ov5647"    | sudo tee -a /boot/firmware/config.txt
 sudo reboot
 
-# 3. Install system packages
+# 3. Install system packages, including picamera2 (via apt, not pip)
 sudo apt-get update
 sudo apt-get install -y python3-pip python3-dev python3-smbus i2c-tools
+sudo apt-get install -y python3-picamera2
 
 # 4. Verify I2C sees the Servo Driver HAT
 i2cdetect -y 1          # expect 0x40 (and 0x70 ALLCALL alias)
 
-# 5. Verify camera is detected
-vcgencmd get_camera     # expect: supported=1 detected=1
+# 5. Verify the camera is detected via libcamera
+python3 -c "from picamera2 import Picamera2; print(Picamera2.global_camera_info())"
+# expect a list containing {'Model': 'ov5647', ...}
+# (vcgencmd get_camera may still show detected=0 — that's the legacy
+#  stack, which this project does not use, and can be ignored)
 
-# 6. Install Python dependencies
-pip3 install -r requirements.txt
+# 6. Create the venv WITH --system-site-packages so it can see the
+#    apt-installed picamera2 / libcamera bindings
+python3 -m venv --system-site-packages venv
+source venv/bin/activate
+
+# 7. Install the remaining Python dependencies
+pip install -r requirements.txt
 ```
 
 ---

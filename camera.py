@@ -1,8 +1,19 @@
 """
 Camera access and face detection for youmirror.
 
-Uses the legacy `picamera` library (correct for Raspberry Pi OS Lite Legacy)
-together with OpenCV's Haar cascade classifier for face detection.
+Uses `picamera2` (built on libcamera), not the legacy `picamera`/MMAL stack.
+On this Pi's kernel/firmware combination the legacy stack fails to detect
+the OV5647 sensor (`vcgencmd get_camera` reports `detected=0`) even though
+the sensor is physically fine — libcamera detects it without issue.
+
+Setup requirement: `picamera2` and its libcamera Python bindings must be
+installed via apt (`sudo apt-get install python3-picamera2`), not pip —
+building libcamera bindings from source via pip drags in FFmpeg/PyAV and
+other heavy native deps that are painful to build on a Pi Zero W. The
+project venv must be created with `--system-site-packages` so it can see
+the apt-installed packages. See README.md for the full setup sequence.
+
+Face detection uses OpenCV's Haar cascade classifier.
 
 The Pi Camera Rev 1.3 (OV5647, 5 MP) is accessed at a reduced resolution
 (see config.py) to keep CPU usage manageable on the Pi Zero W single core.
@@ -11,14 +22,15 @@ Face detection returns the centre pixel of the largest detected face, or
 None when no face is found, so callers don't have to inspect raw rectangles.
 """
 
-import io
 import pathlib
+import time
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
 import cv2
 import numpy as np
-import picamera  # type: ignore  # available only on the Pi
+from picamera2 import Picamera2  # type: ignore  # available only on the Pi
+from libcamera import Transform  # type: ignore  # available only on the Pi
 
 import config
 
@@ -47,16 +59,36 @@ class FaceLocation:
 
 
 class CameraController:
-    """Wraps PiCamera + OpenCV to deliver face locations frame by frame."""
+    """Wraps Picamera2 + OpenCV to deliver face locations frame by frame."""
 
     def __init__(self) -> None:
-        self._camera = picamera.PiCamera()
-        self._camera.resolution = (config.CAMERA_WIDTH, config.CAMERA_HEIGHT)
-        self._camera.framerate = config.CAMERA_FRAMERATE
-        self._camera.rotation = config.CAMERA_ROTATION
+        self._camera = Picamera2()
 
-        # Pre-allocate a reusable stream buffer for raw frame capture
-        self._stream = io.BytesIO()
+        # picamera2's "RGB888" format is, confusingly, actually stored in
+        # BGR byte order in memory — which is exactly what OpenCV expects,
+        # so no channel swap is needed before running cv2 operations.
+        #
+        # Only 0°/180° rotation is supported here via hflip+vflip. 90°/270°
+        # would require a transpose, which is not wired up — rotate frames
+        # in software with cv2.rotate() in capture_frame() if ever needed.
+        if config.CAMERA_ROTATION not in (0, 180):
+            raise NotImplementedError(
+                "CAMERA_ROTATION only supports 0 or 180 in the current "
+                "picamera2 setup. Rotate in software if 90/270 is needed."
+            )
+        flip = config.CAMERA_ROTATION == 180
+        transform = Transform(hflip=flip, vflip=flip)
+
+        video_config = self._camera.create_video_configuration(
+            main={
+                "size": (config.CAMERA_WIDTH, config.CAMERA_HEIGHT),
+                "format": "RGB888",
+            },
+            controls={"FrameRate": config.CAMERA_FRAMERATE},
+            transform=transform,
+        )
+        self._camera.configure(video_config)
+        self._camera.start()
 
         self._detector = cv2.CascadeClassifier(str(_CASCADE_PATH))
         if self._detector.empty():
@@ -65,8 +97,8 @@ class CameraController:
                 "Ensure opencv-python is correctly installed."
             )
 
-        # Give the sensor a moment to adjust exposure after init
-        import time; time.sleep(0.5)
+        # Give the sensor a moment to adjust exposure after start
+        time.sleep(0.5)
 
     # ------------------------------------------------------------------
     # Public API
@@ -74,11 +106,7 @@ class CameraController:
 
     def capture_frame(self) -> np.ndarray:
         """Capture a single BGR frame as a NumPy array."""
-        self._stream.seek(0)
-        self._camera.capture(self._stream, format="bgr", use_video_port=True)
-        self._stream.seek(0)
-        data = np.frombuffer(self._stream.read(), dtype=np.uint8)
-        return data.reshape((config.CAMERA_HEIGHT, config.CAMERA_WIDTH, 3))
+        return self._camera.capture_array()
 
     def detect_face(self, frame: np.ndarray) -> Optional[FaceLocation]:
         """
@@ -114,6 +142,7 @@ class CameraController:
 
     def release(self) -> None:
         """Close the camera cleanly."""
+        self._camera.stop()
         self._camera.close()
 
     # Allow use as a context manager
@@ -129,8 +158,6 @@ class CameraController:
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    import time
-
     print("Camera test: capturing 30 frames and reporting any detected faces.")
     with CameraController() as cam:
         frame_cx, frame_cy = cam.get_frame_center()
