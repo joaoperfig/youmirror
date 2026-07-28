@@ -51,24 +51,32 @@ address configuration, PWM parameters, and servo power notes.
 
 ## One-time Pi setup
 
+> Tested on **Raspberry Pi Zero W v1.1**, **Raspberry Pi OS Lite Legacy**.
+> On this OS the firmware config is at `/boot/firmware/config.txt`.
+
 ```bash
 # 1. Enable I2C
-sudo raspi-config   # Interface Options → I2C → Enable
+sudo raspi-config   # Interface Options → I2C → Enable → reboot
 
-# 2. Enable Camera
-sudo raspi-config   # Interface Options → Camera → Enable
-
+# 2. Enable the legacy camera stack (picamera requires this)
+#    raspi-config does not have a camera option on this OS version.
+#    Add the lines directly to the correct config file:
+echo "start_x=1"          | sudo tee -a /boot/firmware/config.txt
+echo "gpu_mem=128"         | sudo tee -a /boot/firmware/config.txt
+echo "dtoverlay=ov5647"    | sudo tee -a /boot/firmware/config.txt
 sudo reboot
 
-# 3. Verify
-i2cdetect -y 1          # should show 0x40
-vcgencmd get_camera     # should return: supported=1 detected=1
-
-# 4. Install system packages
+# 3. Install system packages
 sudo apt-get update
 sudo apt-get install -y python3-pip python3-dev python3-smbus i2c-tools
 
-# 5. Install Python dependencies
+# 4. Verify I2C sees the Servo Driver HAT
+i2cdetect -y 1          # expect 0x40 (and 0x70 ALLCALL alias)
+
+# 5. Verify camera is detected
+vcgencmd get_camera     # expect: supported=1 detected=1
+
+# 6. Install Python dependencies
 pip3 install -r requirements.txt
 ```
 
