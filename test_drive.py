@@ -7,6 +7,7 @@ axis stops ~0.25 s after the last repeat arrives):
     a / d          pan  left / right   (channel 0)
     w / s          tilt up   / down    (channel 1)
     arrow keys     same as the above
+    Shift+key      turbo (same direction, larger drive offset)
     space          stop both axes immediately
     q / Esc        quit
 
@@ -41,6 +42,16 @@ except ImportError:  # allows trying the tool off-rig on Windows
 # Seconds without a key repeat before an axis is considered released.
 # Must be longer than the OS auto-repeat interval (typically ~0.03-0.1 s).
 _HOLD_TIMEOUT_S = 0.25
+
+# Drive pulse offset beyond the dead-band edge, per axis (us).  Larger =
+# faster; the servo saturates at full speed a few hundred us out.  These are
+# for manual driving only - the tracking loop keeps using
+# config.PAN_DRIVE_OFFSET_US, where the speeds were measured.
+# Turbo offsets are used while a movement key is held with Shift.
+_PAN_OFFSET_US = 150.0
+_PAN_TURBO_OFFSET_US = 400.0
+_TILT_OFFSET_US = float(config.PAN_DRIVE_OFFSET_US)
+_TILT_TURBO_OFFSET_US = 150.0
 
 # If tilt runs the wrong way, flip this instead of relearning the keys.
 _TILT_INVERT = False
@@ -103,44 +114,56 @@ def _read_key(timeout: float) -> Optional[str]:
 # Velocity drive (pan calibration applied to both channels)
 # ---------------------------------------------------------------------------
 
-def _drive_pulse(direction: int) -> float:
+def _drive_pulse(direction: int, offset_us: float) -> float:
     if direction < 0:
-        return config.PAN_MOVE_LEFT_US - config.PAN_DRIVE_OFFSET_US
+        return config.PAN_MOVE_LEFT_US - offset_us
     if direction > 0:
-        return config.PAN_MOVE_RIGHT_US + config.PAN_DRIVE_OFFSET_US
+        return config.PAN_MOVE_RIGHT_US + offset_us
     return (config.PAN_MOVE_LEFT_US + config.PAN_MOVE_RIGHT_US) / 2.0
 
 
 class _Axis:
     """One continuous-rotation axis: commanded direction + release timeout."""
 
-    def __init__(self, servo: ServoController, channel: int, invert: bool = False) -> None:
+    def __init__(
+        self,
+        servo: ServoController,
+        channel: int,
+        offset_us: float,
+        turbo_offset_us: float,
+        invert: bool = False,
+    ) -> None:
         self.servo = servo
         self.channel = channel
+        self.offset_us = offset_us
+        self.turbo_offset_us = turbo_offset_us
         self.invert = invert
         self.direction = 0
+        self.turbo = False
         self._deadline = 0.0
 
-    def press(self, direction: int) -> None:
+    def press(self, direction: int, turbo: bool = False) -> None:
         """A movement key (or auto-repeat) arrived for this axis."""
         if self.invert:
             direction = -direction
         self._deadline = time.monotonic() + _HOLD_TIMEOUT_S
-        self._apply(direction)
+        self._apply(direction, turbo)
 
     def tick(self) -> None:
         """Stop if the key has been released (no repeat within the timeout)."""
         if self.direction and time.monotonic() >= self._deadline:
-            self._apply(0)
+            self._apply(0, False)
 
     def stop(self) -> None:
-        self._apply(0)
+        self._apply(0, False)
 
-    def _apply(self, direction: int) -> None:
-        if direction == self.direction:
+    def _apply(self, direction: int, turbo: bool) -> None:
+        if direction == self.direction and turbo == self.turbo:
             return
-        self.servo.set_pulse_us(self.channel, _drive_pulse(direction))
+        offset = self.turbo_offset_us if turbo else self.offset_us
+        self.servo.set_pulse_us(self.channel, _drive_pulse(direction, offset))
         self.direction = direction
+        self.turbo = turbo
 
 
 # ---------------------------------------------------------------------------
@@ -152,16 +175,23 @@ def main() -> None:
     print("  youmirror - videogame servo drive")
     print("=" * 58)
     print("  hold a/d = pan left/right    hold w/s = tilt up/down")
-    print("  arrows work too    space = stop    q or Esc = quit")
+    print("  hold Shift for turbo    arrows work too")
+    print("  space = stop    q or Esc = quit")
     print()
 
     servo = ServoController()
-    pan = _Axis(servo, config.PAN_CHANNEL)
-    tilt = _Axis(servo, config.TILT_CHANNEL, invert=_TILT_INVERT)
+    pan = _Axis(servo, config.PAN_CHANNEL, _PAN_OFFSET_US, _PAN_TURBO_OFFSET_US)
+    tilt = _Axis(
+        servo,
+        config.TILT_CHANNEL,
+        _TILT_OFFSET_US,
+        _TILT_TURBO_OFFSET_US,
+        invert=_TILT_INVERT,
+    )
 
     # Energise both channels at the stop pulse before driving.
-    servo.set_pulse_us(config.PAN_CHANNEL, _drive_pulse(0))
-    servo.set_pulse_us(config.TILT_CHANNEL, _drive_pulse(0))
+    servo.set_pulse_us(config.PAN_CHANNEL, _drive_pulse(0, _PAN_OFFSET_US))
+    servo.set_pulse_us(config.TILT_CHANNEL, _drive_pulse(0, _TILT_OFFSET_US))
     time.sleep(0.3)
 
     _raw_on()
@@ -169,14 +199,17 @@ def main() -> None:
         while True:
             key = _read_key(timeout=0.03)
 
-            if key == "a":
-                pan.press(-1)
-            elif key == "d":
-                pan.press(+1)
-            elif key == "s":
-                tilt.press(-1)
-            elif key == "w":
-                tilt.press(+1)
+            if key and key in "aAdDsSwW":
+                turbo = key.isupper()  # Shift+letter arrives as uppercase
+                low = key.lower()
+                if low == "a":
+                    pan.press(-1, turbo)
+                elif low == "d":
+                    pan.press(+1, turbo)
+                elif low == "s":
+                    tilt.press(-1, turbo)
+                elif low == "w":
+                    tilt.press(+1, turbo)
             elif key == " ":
                 pan.stop()
                 tilt.stop()
@@ -188,7 +221,11 @@ def main() -> None:
 
             pan_arrow = {0: "  .  ", -1: "<<-- ", +1: " -->>"}[pan.direction]
             tilt_arrow = {0: "  .  ", -1: " vv  ", +1: " ^^  "}[tilt.direction]
-            sys.stdout.write(f"\r  pan [{pan_arrow}]   tilt [{tilt_arrow}]   ")
+            pan_tag = "TURBO" if pan.turbo else "     "
+            tilt_tag = "TURBO" if tilt.turbo else "     "
+            sys.stdout.write(
+                f"\r  pan [{pan_arrow}] {pan_tag}   tilt [{tilt_arrow}] {tilt_tag}   "
+            )
             sys.stdout.flush()
 
     except KeyboardInterrupt:
