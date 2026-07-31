@@ -3,6 +3,17 @@ Hardware configuration and tuning parameters for youmirror.
 
 All physical constants, pin assignments, and tunable values live here so
 nothing is scattered across modules.
+
+Both servos are CONTINUOUS-ROTATION units: the pulse commands SPEED and
+DIRECTION, not position.  Per axis, the calibrated dead band gives the
+pulse edges where movement starts, and the min/max drive offsets give the
+usable speed range beyond those edges:
+
+    pulse = negative_edge - offset   ->  drive negative (left / down)
+    pulse = positive_edge + offset   ->  drive positive (right / up)
+    pulse between the edges          ->  stopped
+
+    offset = OFFSET_MIN_US .. OFFSET_MAX_US   (slowest .. fastest)
 """
 
 # ---------------------------------------------------------------------------
@@ -18,11 +29,6 @@ I2C_BUS = 1
 # PWM frequency for standard hobby servos (Hz)
 SERVO_PWM_FREQ = 50  # 20 ms period
 
-# Pulse widths in microseconds for the servos in use.
-# Adjust these if a servo doesn't reach true 0° / 180° or overshoots.
-SERVO_PULSE_MIN_US = 500   # ~0°
-SERVO_PULSE_MAX_US = 2500  # ~180°
-
 # PCA9685 resolution: 12-bit → 4096 counts over one PWM period
 PCA9685_RESOLUTION = 4096
 
@@ -35,62 +41,46 @@ PAN_CHANNEL  = 0
 TILT_CHANNEL = 1
 
 # ---------------------------------------------------------------------------
-# Pan axis (channel 0) — CONTINUOUS-ROTATION servo, velocity controlled
+# Pan axis (channel 0) — continuous rotation, velocity controlled
 # ---------------------------------------------------------------------------
-# The pan servo is a continuous-rotation unit: the pulse commands SPEED and
-# DIRECTION, not position (measured on the rig):
+# Dead-band edges measured on the rig with `python3 test_servo_pan.py`:
 #   pulse <= PAN_MOVE_LEFT_US   → rotates toward the left wall
 #   pulse >= PAN_MOVE_RIGHT_US  → rotates toward the right wall
 #   anywhere in between         → stopped
-#
-# There is no position feedback.  The camera closes the tracking loop
-# (rotate toward the face, stop when centred); position is only *estimated*
-# by dead reckoning (commanded direction × measured speed × time) so the rig
-# can avoid forcing itself against its mechanical stops.
-#
-# The estimate is anchored at startup by wall-referenced homing: main.py
-# drives left long enough to guarantee touching the left wall from any
-# starting position, then right for half the travel — that point is centre
-# (estimated position 0).  The estimate still drifts slowly afterwards; the
-# soft-limit margin absorbs that.
-#
-# Calibrated with `python3 test_servo_pan.py`.
 PAN_MOVE_LEFT_US  = 1498   # highest pulse that still rotates left
 PAN_MOVE_RIGHT_US = 1616   # lowest pulse that rotates right
 
-# Extra pulse beyond the movement threshold while driving.  0 = slowest
-# creep; larger = faster.  Speeds below must be measured at this offset.
-PAN_DRIVE_OFFSET_US = 50
-
-# Measured rotation speed at the drive pulses (degrees per second).
-PAN_SPEED_LEFT_DPS  = 120.0
-PAN_SPEED_RIGHT_DPS = 120.0
-
-# Rig geometry: measured wall-to-wall travel, and how far the *estimated*
-# position may stray from centre before the software refuses to drive
-# further in that direction (30° of margin from each wall).
-PAN_TRAVEL_DEG     = 236
-PAN_SOFT_LIMIT_DEG = PAN_TRAVEL_DEG / 2 - 30   # ±88° from centre
-
-# Extra drive time added to the homing wall-touch so contact is guaranteed
-# from any starting position (brief, gentle stall against the stop).
-PAN_HOME_EXTRA_S = 0.4
+# Drive offset beyond the dead-band edge (us).  MIN = slowest usable speed,
+# MAX = fastest; the tracking loop interpolates between them based on how
+# far the face is from the frame centre.
+PAN_OFFSET_MIN_US = 200
+PAN_OFFSET_MAX_US = 450
 
 # Flip if the mirror runs away from the face instead of toward it.
 PAN_INVERT = False
 
-# "Home" for the pan axis is estimated position 0 (the homed centre).
-# Stop seeking once the estimate is within this tolerance.
-PAN_HOME_TOLERANCE_DEG = 10
+# Reference values from calibration (used by test_servo_pan.py only; the
+# tracking loop is closed by the camera and does not use position).
+PAN_SPEED_LEFT_DPS  = 120.0
+PAN_SPEED_RIGHT_DPS = 120.0
+PAN_TRAVEL_DEG      = 236   # measured wall-to-wall travel
 
 # ---------------------------------------------------------------------------
-# Tilt axis (channel 1) — standard positional hobby servo
+# Tilt axis (channel 1) — continuous rotation, velocity controlled
 # ---------------------------------------------------------------------------
-# Mapped across SERVO_PULSE_MIN_US–SERVO_PULSE_MAX_US.
-TILT_SERVO_RANGE = 180
-TILT_MIN_ANGLE   =  60
-TILT_MAX_ANGLE   = 120
-TILT_HOME_ANGLE  =  90  # update after physical calibration
+# Dead-band edges: assumed identical to the pan servo until the tilt axis
+# gets its own calibration run.
+#   pulse <= TILT_MOVE_DOWN_US  → rotates down
+#   pulse >= TILT_MOVE_UP_US    → rotates up
+TILT_MOVE_DOWN_US = 1498
+TILT_MOVE_UP_US   = 1616
+
+# Drive offset range beyond the dead-band edge (us), as for pan.
+TILT_OFFSET_MIN_US = 100
+TILT_OFFSET_MAX_US = 250
+
+# Flip if the mirror tilts away from the face instead of toward it.
+TILT_INVERT = False
 
 # ---------------------------------------------------------------------------
 # Pi Camera Module Rev 1.3 (OV5647, 5 MP)
@@ -132,18 +122,21 @@ FACE_MIN_NEIGHBOURS = 3
 FACE_MIN_SIZE = (40, 40)
 
 # ---------------------------------------------------------------------------
-# Tracking controller (proportional gain)
+# Tracking controller (velocity, proportional to pixel error)
 # ---------------------------------------------------------------------------
+# Every frame, the face-centre error vector (pixels) is converted to a
+# direction and speed per axis:
+#
+#   |error| <= DEAD_BAND_PX          → axis stopped
+#   |error| >= FULL_SPEED_ERROR_PX   → drive at OFFSET_MAX_US (full speed)
+#   in between                       → linear ramp OFFSET_MIN..OFFSET_MAX
+#
+# The camera closes the loop: the servo slows as the face approaches the
+# centre and stops inside the dead band.
 
-# Tilt is positional: proportional gain in degrees of tilt per pixel of
-# face-centre error.  Increase if sluggish, decrease if it oscillates.
-KP_TILT = 0.05
-
-# Pan is velocity controlled (continuous-rotation servo): it simply rotates
-# toward the face whenever the horizontal error exceeds DEAD_BAND_PX and
-# stops inside it, so there is no pan gain to tune — only the drive speed
-# (PAN_DRIVE_OFFSET_US above).
-
-# Dead-band: ignore face-center errors smaller than this many pixels.
+# Dead-band: ignore face-centre errors smaller than this many pixels.
 # Prevents the mirror from constantly hunting when the face is nearly centred.
 DEAD_BAND_PX = 10
+
+# Pixel error at which an axis reaches full speed (OFFSET_MAX_US).
+FULL_SPEED_ERROR_PX = 100

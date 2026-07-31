@@ -15,14 +15,18 @@ pan/tilt rig. This means:
 
 Control strategy
 ----------------
-A simple proportional controller is used for each axis:
+Both servos are continuous-rotation units, so control is by velocity, not
+angle.  Every frame, the face-centre error vector (pixels) is converted to
+a direction and speed per axis:
 
-    error_px  = face_centre_px - frame_centre_px   (pixels)
-    Δangle    = Kp * error_px                      (degrees)
-    new_angle = current_angle + Δangle
+    |error| <= DEAD_BAND_PX          →  axis stopped
+    |error| >= FULL_SPEED_ERROR_PX   →  full speed toward the face
+    in between                       →  speed ramps linearly
 
-A dead-band prevents constant hunting when the face is nearly centred.
-Extend to PID by adding integral and derivative terms in _update_axis().
+The camera closes the loop: as the face approaches the frame centre the
+error shrinks, the servo slows, and it stops inside the dead band.  Both
+axes are re-commanded on every loop iteration for dynamic continuous
+tracking.  No position is tracked (range limits are ignored for now).
 
 Usage
 -----
@@ -34,7 +38,6 @@ import argparse
 import logging
 import signal
 import sys
-import time
 
 import config
 from camera import CameraController
@@ -54,24 +57,11 @@ class MirrorTracker:
 
     def __init__(self, debug: bool = False) -> None:
         self._debug = debug
-        self._tilt_angle = float(config.TILT_HOME_ANGLE)
         self._running = False
 
         log.info("Initialising servo controller…")
         self._servos = ServoController()
-
-        homing_s = (
-            config.PAN_TRAVEL_DEG / config.PAN_SPEED_LEFT_DPS
-            + config.PAN_HOME_EXTRA_S
-            + config.PAN_TRAVEL_DEG / 2.0 / config.PAN_SPEED_RIGHT_DPS
-        )
-        log.info(
-            "Homing pan: touching the left wall, then centring (~%.1f s)…",
-            homing_s,
-        )
-        self._servos.pan_home()
-        self._servos.home()
-        log.info("Pan homed — estimated position zeroed at centre.")
+        self._servos.stop_all()
 
         log.info("Initialising camera…")
         self._camera = CameraController()
@@ -88,8 +78,6 @@ class MirrorTracker:
 
     def run(self) -> None:
         self._running = True
-        consecutive_misses = 0
-        max_misses_before_home = 30  # ~1–2 s at ~20 fps before returning home
 
         try:
             while self._running:
@@ -97,7 +85,6 @@ class MirrorTracker:
                 face  = self._camera.detect_face(frame)
 
                 if face is not None:
-                    consecutive_misses = 0
                     error_x = face.cx - self._frame_cx   # + = face is right of centre
                     error_y = face.cy - self._frame_cy   # + = face is below centre
 
@@ -107,39 +94,18 @@ class MirrorTracker:
                             face.cx, face.cy, error_x, error_y,
                         )
 
-                    # Pan (continuous-rotation servo): rotate toward the face,
-                    # stop once it is inside the dead band.  The camera closes
-                    # this loop, so no position is needed — the controller's
-                    # dead-reckoned soft limits keep us off the walls.
-                    if abs(error_x) <= config.DEAD_BAND_PX:
-                        self._servos.pan_stop()
-                    else:
-                        direction = 1 if error_x > 0 else -1
-                        if config.PAN_INVERT:
-                            direction = -direction
-                        self._servos.pan_drive(direction)
-
-                    # Tilt (positional servo): proportional control as before.
-                    self._tilt_angle = self._update_axis(
-                        self._tilt_angle,
-                        error_y,
-                        config.KP_TILT,
-                        config.TILT_MIN_ANGLE,
-                        config.TILT_MAX_ANGLE,
-                        invert=True,   # positive error → look down → smaller angle
-                    )
-                    self._servos.set_tilt(self._tilt_angle)
+                    # Desired direction vector → per-axis direction + speed,
+                    # re-commanded every frame.
+                    # Pan: positive error (face right of centre) → drive right.
+                    self._drive_axis("pan", error_x, invert=config.PAN_INVERT)
+                    # Tilt: positive error (face below centre) → drive down,
+                    # so the base sense is inverted.
+                    self._drive_axis("tilt", error_y, invert=not config.TILT_INVERT)
 
                 else:
-                    consecutive_misses += 1
-                    if consecutive_misses < max_misses_before_home:
-                        # Face just lost: stop rotating immediately, don't
-                        # keep sweeping on stale information.
-                        self._servos.pan_stop()
-                    else:
-                        if consecutive_misses == max_misses_before_home:
-                            log.info("No face detected – seeking estimated centre.")
-                        self._seek_home()
+                    # No face: stop immediately, don't keep sweeping on
+                    # stale information.
+                    self._servos.stop_all()
 
         except KeyboardInterrupt:
             log.info("Interrupted by user.")
@@ -149,8 +115,6 @@ class MirrorTracker:
     def shutdown(self) -> None:
         self._running = False
         log.info("Shutting down…")
-        self._servos.home()
-        time.sleep(0.3)
         self._servos.shutdown()
         self._camera.release()
         log.info("Shutdown complete.")
@@ -159,42 +123,27 @@ class MirrorTracker:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _update_axis(
-        self,
-        current_angle: float,
-        error_px: int,
-        kp: float,
-        min_angle: float,
-        max_angle: float,
-        invert: bool,
-    ) -> float:
-        """Apply proportional control with dead-band and angle clamping."""
-        if abs(error_px) <= config.DEAD_BAND_PX:
-            return current_angle
+    def _drive_axis(self, axis: str, error_px: int, invert: bool) -> None:
+        """
+        Convert one component of the error vector into a velocity command.
 
-        delta = kp * error_px
+        Inside the dead band the axis stops.  Outside it, speed ramps
+        linearly from the axis's minimum drive offset (at the dead-band
+        edge) to its maximum (at FULL_SPEED_ERROR_PX and beyond).
+        """
+        magnitude = abs(error_px)
+        if magnitude <= config.DEAD_BAND_PX:
+            self._servos.stop(axis)
+            return
+
+        ramp_span = config.FULL_SPEED_ERROR_PX - config.DEAD_BAND_PX
+        throttle = min(1.0, (magnitude - config.DEAD_BAND_PX) / ramp_span)
+
+        direction = 1 if error_px > 0 else -1
         if invert:
-            delta = -delta
+            direction = -direction
 
-        new_angle = current_angle + delta
-        return max(min_angle, min(max_angle, new_angle))
-
-    def _seek_home(self) -> None:
-        """
-        One per-frame step toward the startup centre (estimated position 0).
-
-        Called repeatedly while no face is visible; the frame rate provides
-        the pacing.  Dead reckoning is coarse, so we stop within a tolerance
-        rather than hunting for an exact zero.
-        """
-        estimate = self._servos.pan_position_deg()
-        if abs(estimate) <= config.PAN_HOME_TOLERANCE_DEG:
-            self._servos.pan_stop()
-        else:
-            self._servos.pan_drive(-1 if estimate > 0 else +1)
-
-        self._tilt_angle = float(config.TILT_HOME_ANGLE)
-        self._servos.set_tilt(self._tilt_angle)
+        self._servos.drive(axis, direction, throttle)
 
 
 # ---------------------------------------------------------------------------

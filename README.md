@@ -9,10 +9,12 @@ Raspberry Pi Zero W, a Pi Camera Rev 1.3, and a Waveshare Servo Driver HAT.
 
 1. The Pi Camera captures frames at 320×240.
 2. OpenCV's Haar cascade detector finds the user's face in each frame.
-3. A proportional controller calculates the angular error between the face
-   centre and the frame centre.
-4. The error is converted to servo angle corrections and sent to the
-   Servo Driver HAT (PCA9685) over I2C.
+3. Every frame, the pixel offset between the face centre and the frame
+   centre becomes a desired direction vector.
+4. Both servos are continuous-rotation units, so each axis is sent a
+   velocity command (direction + speed) via the Servo Driver HAT (PCA9685)
+   over I2C. Speed ramps with the pixel error and the axis stops inside a
+   dead band — the camera closes the loop.
 5. The pan servo (channel 0) handles left/right; the tilt servo (channel 1)
    handles up/down.
 
@@ -22,13 +24,16 @@ Raspberry Pi Zero W, a Pi Camera Rev 1.3, and a Waveshare Servo Driver HAT.
 
 ```
 youmirror/
-├── config.py          # all hardware constants and tuning parameters
-├── servo_control.py   # PCA9685 driver (I2C via smbus2)
-├── camera.py          # Pi Camera capture + OpenCV face detection
-├── main.py            # tracking loop – entry point
-├── requirements.txt   # Python dependencies
+├── config.py           # all hardware constants and tuning parameters
+├── servo_control.py    # PCA9685 driver (I2C via smbus2), velocity API
+├── camera.py           # Pi Camera capture + OpenCV face detection
+├── main.py             # tracking loop – entry point
+├── test_drive.py       # manual WASD drive of both servos
+├── test_servo_pan.py   # pan dead-band / speed calibration tool
+├── test_camera.py      # camera + face detection test
+├── requirements.txt    # Python dependencies
 └── docs/
-    └── hardware.md    # detailed hardware notes and wiring
+    └── hardware.md     # detailed hardware notes and wiring
 ```
 
 ---
@@ -109,15 +114,21 @@ python3 main.py
 # Verbose face-error logging (useful while tuning gains)
 python3 main.py --debug
 
-# Test servos only (sweep pan axis 0°→180°→90°)
+# Test servos only (short velocity wiggle on both axes)
 python3 servo_control.py
+
+# Drive both servos manually (hold WASD/arrows, Shift = turbo)
+python3 test_drive.py
+
+# Calibrate the pan dead band and speeds
+python3 test_servo_pan.py
 
 # Test camera and face detection only (30-frame report)
 python3 camera.py
 ```
 
-Stop with **Ctrl-C** or `kill <pid>`. The servos return to their home
-position (90°/90°) before the process exits.
+Stop with **Ctrl-C** or `kill <pid>`. The servos are stopped and all PWM
+channels released before the process exits.
 
 ---
 
@@ -129,15 +140,19 @@ All tuneable values are in `config.py`:
 |---|---|---|
 | `PAN_CHANNEL` | `0` | HAT channel for the pan servo |
 | `TILT_CHANNEL` | `1` | HAT channel for the tilt servo |
-| `PAN_HOME_ANGLE` | `90` | Pan neutral position (degrees) |
-| `TILT_HOME_ANGLE` | `90` | Tilt neutral position (degrees) |
+| `PAN_MOVE_LEFT_US` / `PAN_MOVE_RIGHT_US` | `1498` / `1616` | Pan dead-band edges (pulse where movement starts) |
+| `TILT_MOVE_DOWN_US` / `TILT_MOVE_UP_US` | `1498` / `1616` | Tilt dead-band edges (assumed = pan until calibrated) |
+| `PAN_OFFSET_MIN_US` / `PAN_OFFSET_MAX_US` | `200` / `450` | Pan speed range: drive offset beyond the dead-band edge |
+| `TILT_OFFSET_MIN_US` / `TILT_OFFSET_MAX_US` | `100` / `250` | Tilt speed range |
+| `PAN_INVERT` / `TILT_INVERT` | `False` | Flip an axis's direction sense |
 | `CAMERA_WIDTH/HEIGHT` | `320×240` | Capture resolution |
 | `CAMERA_FRAMERATE` | `24` | Frames per second |
-| `KP_PAN` / `KP_TILT` | `0.05` | Proportional gain (°/px) |
-| `DEAD_BAND_PX` | `10` | Ignore errors smaller than this |
+| `DEAD_BAND_PX` | `10` | Stop the axis when the error is smaller than this |
+| `FULL_SPEED_ERROR_PX` | `100` | Pixel error at which an axis reaches full speed |
 
-Increase `KP_PAN` / `KP_TILT` if tracking feels sluggish; decrease if the
-mirror oscillates around the face.
+Raise the `OFFSET_MAX` values if tracking feels sluggish; lower the
+`OFFSET_MIN` values (or raise `FULL_SPEED_ERROR_PX` for a gentler ramp)
+if the mirror oscillates around the face.
 
 ---
 

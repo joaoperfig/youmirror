@@ -59,10 +59,10 @@ i2cdetect -y 1      # should show 0x40 (and 0x70 ALLCALL alias)
 
 Channels are numbered 0–15 across the top of the HAT.
 
-| Channel | Axis | Direction |
+| Channel | Axis | Type |
 |---|---|---|
-| 0 | Pan (horizontal / left-right) | Multi-turn servo; rig degrees 0 = left wall … `PAN_TRAVEL_DEG` = right wall (see below) |
-| 1 | Tilt (vertical / up-down) | 0° = full down, 90° = centre, 180° = full up |
+| 0 | Pan (horizontal / left-right) | Continuous rotation — pulse commands speed + direction (see below) |
+| 1 | Tilt (vertical / up-down) | Continuous rotation — pulse commands speed + direction (see below) |
 
 > **Do not plug the servo cable in reverse** – the PCA9685 and/or servo will be damaged.
 
@@ -71,15 +71,13 @@ Channels are numbered 0–15 across the top of the HAT.
 | Parameter | Value |
 |---|---|
 | Frequency | 50 Hz (20 ms period) |
-| Min pulse | 500 µs ≈ 0° (tilt axis) |
-| Max pulse | 2500 µs ≈ 180° (tilt axis) |
 | Resolution | 12-bit (4096 counts per period → ~4.9 µs per count at 50 Hz) |
 
-These values match the defaults in `config.py`. Adjust `SERVO_PULSE_MIN_US`
-/ `SERVO_PULSE_MAX_US` if the tilt servo doesn't hit its endpoints cleanly.
-The **pan axis does not use this mapping** — it uses the pulse endpoints
-measured at the rig's mechanical stops (`PAN_PULSE_LEFT_US` /
-`PAN_PULSE_RIGHT_US`, calibrated with `test_servo_pan.py`).
+Both servos are continuous-rotation units, so there is no angle↔pulse
+mapping. Each axis uses its calibrated dead-band edges (the pulses where
+movement starts in each direction, e.g. `PAN_MOVE_LEFT_US` /
+`PAN_MOVE_RIGHT_US`) plus a drive offset that sets the speed — see the
+Servos section below and `config.py`.
 
 ### I2C address configuration
 
@@ -156,66 +154,53 @@ assembly on the pan/tilt rig.
 - The system only ever issues incremental adjustments ("a bit more left/up"),
   not absolute angle targets.
 
-**Home position calibration:**
+**Direction calibration:**
 
-The `PAN_HOME_ANGLE` and `TILT_HOME_ANGLE` values in `config.py` must be set
-to the angles where the mirror points straight ahead at a standing user —
-not blindly to 90°/90°. Procedure:
-
-1. Mount the mirror/camera assembly on the rig.
-2. Stand in front of the mirror at the expected use distance.
-3. Run `python3 servo_control.py` and manually command angles until the mirror
-   reflects your face back at you centred.
-4. Record those angles and update `PAN_HOME_ANGLE` / `TILT_HOME_ANGLE`.
+There is no home position — both axes are velocity controlled and the
+camera closes the loop. The only per-rig setting is the direction sense:
+run `python3 test_drive.py` and check that `d` pans toward the rig's right
+and `w` tilts up; flip `PAN_INVERT` / `TILT_INVERT` in `config.py` if an
+axis runs the wrong way.
 
 ---
 
 ## Servos
 
-### Pan servo (channel 0) — continuous rotation
-
-The pan servo is a **continuous-rotation** unit: the pulse commands **speed
-and direction, not position**. Measured on the rig:
+Both servos are **continuous-rotation** units: the pulse commands **speed
+and direction, not position**. Per axis, the pulses at which movement
+starts (dead-band edges) are calibrated, and speed is set by how far the
+drive pulse sits beyond the edge:
 
 | Pulse | Behaviour |
 |---|---|
-| ≤ ~1500 µs | rotates toward the left wall |
-| ~1500–1616 µs | stopped (dead band) |
-| ≥ ~1616 µs | rotates toward the right wall |
+| ≤ negative edge (e.g. ~1498 µs) | drives negative (left / down), faster the lower the pulse |
+| between the edges | stopped (dead band) |
+| ≥ positive edge (e.g. ~1616 µs) | drives positive (right / up), faster the higher the pulse |
 
-The rig's mechanical stops are ~118° each side of centre (~236° wall to
-wall). Measured drive speed at the configured offset is ~120°/s each way.
+**Control model.** The camera closes the tracking loop: each frame,
+`main.py` converts the face-centre error vector into a direction and speed
+per axis (`ServoController.drive`). Speed ramps linearly from the axis's
+`OFFSET_MIN_US` (at the pixel dead band) to `OFFSET_MAX_US` (at
+`FULL_SPEED_ERROR_PX` of error), so the rig slows as the face approaches
+the centre and stops inside the dead band. No position is tracked and no
+range limits are enforced for now.
 
-**Control model.** The camera closes the tracking loop (rotate toward the
-face, stop when it is centred in frame), so absolute position is never
-needed for tracking. To keep the rig off its mechanical stops, position is
-**dead-reckoned**: estimated degrees = commanded direction × measured speed
-× time (`ServoController.pan_position_deg`). Soft limits refuse to drive
-past ±`PAN_SOFT_LIMIT_DEG` of estimated excursion.
+### Pan servo (channel 0)
 
-**Startup homing.** The estimate is anchored automatically when `main.py`
-starts (`ServoController.pan_home`): the rig drives left long enough to
-guarantee touching the left wall from any starting position (a brief,
-gentle stall), then drives right for half the travel time — that point is
-the physical centre and the estimate is zeroed there. The estimate still
-drifts slowly afterwards (speed varies with load and supply voltage); the
-soft-limit margin absorbs this.
+Dead-band edges measured on the rig: moves left at ≤ 1498 µs, right at
+≥ 1616 µs. Drive offsets: 200 µs (min) to 450 µs (max). The rig's
+mechanical stops are ~118° each side of centre (~236° wall to wall);
+measured speed reference is ~120°/s (see `config.py`).
 
-Calibrate the dead-band edges and the per-direction speeds with
+Calibrate the dead-band edges and reference speeds with
 `python3 test_servo_pan.py` and paste the printed values into `config.py`.
 
-### Tilt servo (channel 1) — standard
+### Tilt servo (channel 1)
 
-| Spec | Recommendation |
-|---|---|
-| Type | PWM hobby servo (50 Hz, 500–2500 µs, 180°) |
-| Torque | ≥ 1.5 kg·cm for a small mirror |
-| Voltage | 5 V (matches HAT output) |
-| Note | Avoid high-torque servos (e.g. MG996R) without external power on VIN |
-
-Low-power servos like the **SG90** or **MG90S** work well at 5 V from the Pi.
-For heavier mirrors, supply 6–12 V via the VIN terminal after removing the
-onboard 0 Ω resistor.
+Also continuous rotation. Its dead-band edges are **assumed identical to
+the pan servo's** (`TILT_MOVE_DOWN_US` / `TILT_MOVE_UP_US` = 1498 / 1616 µs)
+until the axis gets its own calibration run. Drive offsets: 100 µs (min)
+to 250 µs (max).
 
 ---
 

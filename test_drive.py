@@ -7,13 +7,13 @@ axis stops ~0.25 s after the last repeat arrives):
     a / d          pan  left / right   (channel 0)
     w / s          tilt up   / down    (channel 1)
     arrow keys     same as the above
-    Shift+key      turbo (same direction, larger drive offset)
+    Shift+key      turbo (drives at the axis's OFFSET_MAX_US)
     space          stop both axes immediately
     q / Esc        quit
 
-Both axes are treated as continuous-rotation servos and BOTH use the pan
-calibration from config.py (PAN_MOVE_LEFT_US / PAN_MOVE_RIGHT_US /
-PAN_DRIVE_OFFSET_US) until the tilt axis gets its own calibration.
+Both axes are continuous-rotation servos driven through the velocity API in
+servo_control.py.  Normal speed uses the axis's OFFSET_MIN_US, turbo its
+OFFSET_MAX_US (see config.py).
 
 No soft limits are enforced here - watch the rig and let go near the stops.
 
@@ -42,19 +42,6 @@ except ImportError:  # allows trying the tool off-rig on Windows
 # Seconds without a key repeat before an axis is considered released.
 # Must be longer than the OS auto-repeat interval (typically ~0.03-0.1 s).
 _HOLD_TIMEOUT_S = 0.25
-
-# Drive pulse offset beyond the dead-band edge, per axis (us).  Larger =
-# faster; the servo saturates at full speed a few hundred us out.  These are
-# for manual driving only - the tracking loop keeps using
-# config.PAN_DRIVE_OFFSET_US, where the speeds were measured.
-# Turbo offsets are used while a movement key is held with Shift.
-_PAN_OFFSET_US = 150.0
-_PAN_TURBO_OFFSET_US = 400.0
-_TILT_OFFSET_US = float(config.PAN_DRIVE_OFFSET_US)
-_TILT_TURBO_OFFSET_US = 150.0
-
-# If tilt runs the wrong way, flip this instead of relearning the keys.
-_TILT_INVERT = False
 
 
 # ---------------------------------------------------------------------------
@@ -111,32 +98,15 @@ def _read_key(timeout: float) -> Optional[str]:
 
 
 # ---------------------------------------------------------------------------
-# Velocity drive (pan calibration applied to both channels)
+# Axis hold state
 # ---------------------------------------------------------------------------
 
-def _drive_pulse(direction: int, offset_us: float) -> float:
-    if direction < 0:
-        return config.PAN_MOVE_LEFT_US - offset_us
-    if direction > 0:
-        return config.PAN_MOVE_RIGHT_US + offset_us
-    return (config.PAN_MOVE_LEFT_US + config.PAN_MOVE_RIGHT_US) / 2.0
-
-
 class _Axis:
-    """One continuous-rotation axis: commanded direction + release timeout."""
+    """One axis: commanded direction/turbo tier + key-release timeout."""
 
-    def __init__(
-        self,
-        servo: ServoController,
-        channel: int,
-        offset_us: float,
-        turbo_offset_us: float,
-        invert: bool = False,
-    ) -> None:
+    def __init__(self, servo: ServoController, name: str, invert: bool = False) -> None:
         self.servo = servo
-        self.channel = channel
-        self.offset_us = offset_us
-        self.turbo_offset_us = turbo_offset_us
+        self.name = name
         self.invert = invert
         self.direction = 0
         self.turbo = False
@@ -160,8 +130,7 @@ class _Axis:
     def _apply(self, direction: int, turbo: bool) -> None:
         if direction == self.direction and turbo == self.turbo:
             return
-        offset = self.turbo_offset_us if turbo else self.offset_us
-        self.servo.set_pulse_us(self.channel, _drive_pulse(direction, offset))
+        self.servo.drive(self.name, direction, throttle=1.0 if turbo else 0.0)
         self.direction = direction
         self.turbo = turbo
 
@@ -180,18 +149,11 @@ def main() -> None:
     print()
 
     servo = ServoController()
-    pan = _Axis(servo, config.PAN_CHANNEL, _PAN_OFFSET_US, _PAN_TURBO_OFFSET_US)
-    tilt = _Axis(
-        servo,
-        config.TILT_CHANNEL,
-        _TILT_OFFSET_US,
-        _TILT_TURBO_OFFSET_US,
-        invert=_TILT_INVERT,
-    )
+    pan = _Axis(servo, "pan", invert=config.PAN_INVERT)
+    tilt = _Axis(servo, "tilt", invert=config.TILT_INVERT)
 
-    # Energise both channels at the stop pulse before driving.
-    servo.set_pulse_us(config.PAN_CHANNEL, _drive_pulse(0, _PAN_OFFSET_US))
-    servo.set_pulse_us(config.TILT_CHANNEL, _drive_pulse(0, _TILT_OFFSET_US))
+    # Energise both channels at their stop pulse before driving.
+    servo.stop_all()
     time.sleep(0.3)
 
     _raw_on()

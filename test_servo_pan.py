@@ -132,7 +132,7 @@ class _Cal:
     def __init__(self) -> None:
         self.move_left_us = float(config.PAN_MOVE_LEFT_US)
         self.move_right_us = float(config.PAN_MOVE_RIGHT_US)
-        self.drive_offset_us = float(config.PAN_DRIVE_OFFSET_US)
+        self.drive_offset_us = float(config.PAN_OFFSET_MIN_US)
         self.speed_left_dps = float(config.PAN_SPEED_LEFT_DPS)
         self.speed_right_dps = float(config.PAN_SPEED_RIGHT_DPS)
         self.travel_deg = float(config.PAN_TRAVEL_DEG)
@@ -351,13 +351,13 @@ def _print_config(cal: _Cal) -> None:
     print("  --- Paste into config.py -------------------------------")
     print(f"  PAN_MOVE_LEFT_US  = {cal.move_left_us:.0f}")
     print(f"  PAN_MOVE_RIGHT_US = {cal.move_right_us:.0f}")
-    print(f"  PAN_DRIVE_OFFSET_US = {cal.drive_offset_us:.0f}")
+    print(f"  PAN_OFFSET_MIN_US = {cal.drive_offset_us:.0f}")
     print(f"  PAN_SPEED_LEFT_DPS  = {cal.speed_left_dps:.0f}")
     print(f"  PAN_SPEED_RIGHT_DPS = {cal.speed_right_dps:.0f}")
     print(f"  PAN_TRAVEL_DEG     = {cal.travel_deg:.0f}")
     print("  --------------------------------------------------------")
-    print("  main.py homes automatically at startup: it touches the left")
-    print("  wall, then drives right for half the travel to find centre.")
+    print("  Speeds/travel are reference values for this tool; the tracking")
+    print("  loop is camera-closed and does not use position for now.")
 
 
 def main() -> None:
